@@ -1,12 +1,26 @@
 {
   "name": "time-cog-layer",
-  "private": true,
   "version": "0.0.0",
   "type": "module",
+  "description": "A deck.gl CompositeLayer for time-indexed Cloud-Optimized GeoTIFF playback.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview"
+    "build": "tsc -p tsconfig.build.json",
+    "build:demo": "vite build",
+    "preview": "vite preview",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "devDependencies": {
     "typescript": "~6.0.2",
@@ -14,5 +28,12 @@
   },
   "dependencies": {
     "@developmentseed/deck.gl-geotiff": "^0.6.1"
+  },
+  "peerDependencies": {
+    "@deck.gl/core": "^9.3.0",
+    "@deck.gl/geo-layers": "^9.3.0",
+    "@deck.gl/layers": "^9.3.0",
+    "@deck.gl/mesh-layers": "^9.3.0",
+    "@luma.gl/core": "^9.3.2"
   }
 }

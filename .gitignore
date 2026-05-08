@@ -13,6 +13,7 @@ shh*/
 
 node_modules
 dist
+demo-dist
 dist-ssr
 *.local
 

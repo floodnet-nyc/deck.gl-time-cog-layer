@@ -1,0 +1,268 @@
+import { Deck } from "@deck.gl/core";
+import type { GetTileDataOptions, MinimalTileData } from "@developmentseed/deck.gl-geotiff";
+import { texture as geotiffTexture } from "@developmentseed/deck.gl-geotiff";
+import type { RenderTileResult } from "@developmentseed/deck.gl-raster";
+import type { RasterModule } from "@developmentseed/deck.gl-raster/gpu-modules";
+import { CreateTexture, MaskTexture } from "@developmentseed/deck.gl-raster/gpu-modules";
+import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
+import type { Texture } from "@luma.gl/core";
+import type { NormalizedTimeCOGFrame, TimeCOGFrame } from "../index.js";
+import { TimeCOGLayer, normalizeFrameCatalog } from "../index.js";
+import "../demo/style.css";
+
+const DISPLAY_OPACITY = 0.86;
+const PRECIP_MAX_RAW_VALUE = 200;
+
+type PrecipTileData = MinimalTileData & {
+  byteLength: number;
+  texture: Texture;
+  mask?: Texture;
+};
+
+const PrecipColorRamp = {
+  name: "precip-color-ramp",
+  inject: {
+    "fs:DECKGL_FILTER_COLOR": `
+float rawValue = color.r * 65535.0;
+if (rawValue <= 0.0) {
+  discard;
+}
+
+float t = clamp(rawValue / ${PRECIP_MAX_RAW_VALUE.toFixed(1)}, 0.0, 1.0);
+t = pow(t, 0.72);
+
+vec3 c0 = vec3(0.56, 0.77, 0.98);
+vec3 c1 = vec3(0.10, 0.95, 0.86);
+vec3 c2 = vec3(0.32, 0.98, 0.45);
+vec3 c3 = vec3(0.96, 0.84, 0.20);
+vec3 c4 = vec3(0.98, 0.38, 0.76);
+vec3 c5 = vec3(0.98, 0.75, 0.93);
+
+vec3 ramp;
+if (t < 0.18) {
+  ramp = mix(c0, c1, smoothstep(0.0, 0.18, t));
+} else if (t < 0.42) {
+  ramp = mix(c1, c2, smoothstep(0.18, 0.42, t));
+} else if (t < 0.68) {
+  ramp = mix(c2, c3, smoothstep(0.42, 0.68, t));
+} else if (t < 0.88) {
+  ramp = mix(c3, c4, smoothstep(0.68, 0.88, t));
+} else {
+  ramp = mix(c4, c5, smoothstep(0.88, 1.0, t));
+}
+
+float alpha = smoothstep(0.0, 0.06, t) * (0.20 + 0.70 * sqrt(t));
+color = vec4(ramp, alpha);
+`,
+  },
+} as const;
+
+type PrecipIndex = {
+  features: Array<{
+    properties: {
+      time: string;
+      url: string;
+    };
+  }>;
+};
+
+function padToAlignment(
+  data: Uint8Array | Uint16Array,
+  width: number,
+  height: number,
+  bytesPerPixel: number,
+): Uint8Array | Uint16Array {
+  const rowBytes = width * bytesPerPixel;
+  const alignedRowBytes = Math.ceil(rowBytes / 4) * 4;
+
+  if (alignedRowBytes === rowBytes) {
+    return data;
+  }
+
+  const src = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  const dstBytes = new Uint8Array(alignedRowBytes * height);
+
+  for (let row = 0; row < height; row += 1) {
+    dstBytes.set(src.subarray(row * rowBytes, (row + 1) * rowBytes), row * alignedRowBytes);
+  }
+
+  return data instanceof Uint16Array ? new Uint16Array(dstBytes.buffer) : dstBytes;
+}
+
+async function getPrecipTileData(
+  image: GeoTIFF | Overview,
+  { device, x, y, signal, pool }: GetTileDataOptions,
+): Promise<PrecipTileData> {
+  const tile = await image.fetchTile(x, y, {
+    boundless: false,
+    pool,
+    signal,
+  });
+  const { array } = tile;
+  const { width, height, mask } = array;
+
+  if (array.layout === "band-separate") {
+    throw new Error("Band-separate precipitation tiles are not supported.");
+  }
+
+  const alignedData = padToAlignment(array.data as Uint8Array | Uint16Array, width, height, 2);
+  const texture = device.createTexture({
+    data: alignedData,
+    format: geotiffTexture.inferTextureFormat(1, [16], [1]),
+    width,
+    height,
+    sampler: {
+      minFilter: "linear",
+      magFilter: "linear",
+    },
+  });
+  let maskTexture: Texture | undefined;
+  let byteLength = alignedData.byteLength;
+
+  if (mask) {
+    const alignedMask = padToAlignment(mask, width, height, 1) as Uint8Array;
+    maskTexture = device.createTexture({
+      data: alignedMask,
+      format: "r8unorm",
+      width,
+      height,
+      sampler: {
+        minFilter: "nearest",
+        magFilter: "nearest",
+      },
+    });
+    byteLength += alignedMask.byteLength;
+  }
+
+  return {
+    texture,
+    mask: maskTexture,
+    byteLength,
+    width,
+    height,
+  };
+}
+
+function renderPrecipTile(data: PrecipTileData): RenderTileResult {
+  const renderPipeline: RasterModule[] = [
+    {
+      module: CreateTexture,
+      props: {
+        textureName: data.texture,
+      },
+    },
+    {
+      module: PrecipColorRamp,
+    },
+  ];
+
+  if (data.mask) {
+    renderPipeline.push({
+      module: MaskTexture,
+      props: {
+        maskTexture: data.mask,
+      },
+    });
+  }
+
+  return { renderPipeline };
+}
+
+const app = document.querySelector<HTMLDivElement>("#app");
+
+if (!app) {
+  throw new Error("Missing #app element");
+}
+
+app.innerHTML = `
+  <div id="deck"></div>
+  <aside id="controls">
+    <strong>TimeCOGLayer demo</strong>
+    <label>
+      Frame
+      <input id="frame" type="range" min="0" max="0" value="0" />
+    </label>
+    <output id="time"></output>
+    <output id="stats"></output>
+  </aside>
+`;
+
+const frameInput = document.querySelector<HTMLInputElement>("#frame");
+const timeOutput = document.querySelector<HTMLOutputElement>("#time");
+const statsOutput = document.querySelector<HTMLOutputElement>("#stats");
+
+if (!frameInput || !timeOutput || !statsOutput) {
+  throw new Error("Missing demo controls");
+}
+
+const index = await fetch("/precip_cog_index.json").then((response) => {
+  if (!response.ok) {
+    throw new Error(`Failed to load precip index: ${response.status}`);
+  }
+
+  return response.json() as Promise<PrecipIndex>;
+});
+
+const frames: TimeCOGFrame[] = index.features.map((feature) => {
+  const sourceUrl = new URL(feature.properties.url);
+
+  return {
+    time: feature.properties.time,
+    url: `/cogs/${sourceUrl.pathname.split("/").at(-1)}`,
+  };
+});
+const catalog = normalizeFrameCatalog(frames);
+let selectedFrame = catalog[0] as NormalizedTimeCOGFrame | undefined;
+
+frameInput.max = String(Math.max(0, catalog.length - 1));
+
+const deck = new Deck({
+  parent: document.querySelector<HTMLDivElement>("#deck") ?? undefined,
+  initialViewState: {
+    longitude: -74.006,
+    latitude: 40.7128,
+    zoom: 7,
+    pitch: 0,
+    bearing: 0,
+  },
+  controller: true,
+  layers: [],
+});
+
+function render(): void {
+  if (!selectedFrame) {
+    return;
+  }
+
+  timeOutput.value = new Date(selectedFrame.timeMs).toISOString();
+  deck.setProps({
+    layers: [
+      new TimeCOGLayer({
+        id: "time-cog-layer-demo",
+        frames,
+        currentTime: selectedFrame.timeMs,
+        getTileData: getPrecipTileData,
+        renderTile: renderPrecipTile,
+        opacity: DISPLAY_OPACITY,
+        missingFramePolicy: "nearest",
+        bufferPolicy: {
+          backwardFrames: 1,
+          forwardFrames: 3,
+        },
+        cachePolicy: {
+          maxFrames: 12,
+        },
+        onStats: (stats) => {
+          statsOutput.value = `${stats.readyFrameCount}/${stats.frameCount} ready, ${stats.scheduledFrameCount} scheduled`;
+        },
+      }),
+    ],
+  });
+}
+
+frameInput.addEventListener("input", () => {
+  selectedFrame = catalog[Number(frameInput.value)];
+  render();
+});
+
+render();
