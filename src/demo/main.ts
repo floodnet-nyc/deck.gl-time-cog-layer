@@ -298,7 +298,7 @@ function render(): void {
           forwardFrames: 3,
         },
         cachePolicy: {
-          maxFrames: 12,
+          maxFrames: 120,
         },
     onStats: (stats) => {
       statsOutput.value = `${stats.readyFrameCount}/${stats.frameCount} ready, ${stats.scheduledFrameCount} scheduled`;
