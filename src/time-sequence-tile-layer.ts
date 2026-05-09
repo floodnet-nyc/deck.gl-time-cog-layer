@@ -272,6 +272,8 @@ export class TimeSequenceTileLayer<
         } as unknown as DataT;
       }
 
+      tileCache.recordMiss();
+
       const bias = previewBias ?? 0;
       let quality: TileQuality = bias > 0 ? "preview" : "full";
 

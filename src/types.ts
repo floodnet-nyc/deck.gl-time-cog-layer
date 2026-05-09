@@ -128,6 +128,16 @@ export type TimeCOGStats = {
   currentTimeMs: number;
   targetFrameId: string | null;
   displayFrameId: string | null;
+  /** Tasks currently queued or in-flight in the prefetcher. */
+  prefetchTaskCount: number;
+  /** Exponential weighted moving average tile fetch time (ms). */
+  rttEWMA: number;
+  /** EWMA throughput estimate (bytes/sec). */
+  throughputEWMA: number;
+  /** Fraction of prefetch tasks aborted (0–1). */
+  abortRate: number;
+  /** Cache hit rate (0–1) across all tile lookups. */
+  cacheHitRate: number;
 };
 
 export type TimeCOGFrameResolution = {

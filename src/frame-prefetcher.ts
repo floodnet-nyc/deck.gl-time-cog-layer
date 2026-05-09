@@ -46,6 +46,8 @@ type PrefetchSnapshot = {
   signal?: AbortSignal;
   interactionMode: InteractionMode;
   qualityPolicy: QualityPolicy;
+  /** Fraction of visible tiles cached at full quality for the target frame (0–1). */
+  coverage?: number;
 };
 
 const MAX_GEOTIFF_CACHE = 8;
@@ -103,12 +105,24 @@ export class FramePrefetcher {
   private layerSignal: AbortSignal | undefined;
   private activeCount = 0;
 
+  private rttEWMA = 0;
+  private throughputEWMA = 0;
+  private totalTasks = 0;
+  private abortedTasks = 0;
+  private uploadsThisFrame = 0;
+  private maxDecodeTasks: number;
+  private maxGpuUploads: number;
+
   constructor(
     tileCache: SequenceTileCache,
     maxConcurrent = 4,
+    maxDecodeTasks?: number,
+    maxGpuUploads?: number,
   ) {
     this.tileCache = tileCache;
     this.maxConcurrent = maxConcurrent;
+    this.maxDecodeTasks = maxDecodeTasks ?? maxConcurrent;
+    this.maxGpuUploads = maxGpuUploads ?? Math.max(1, Math.floor(maxConcurrent / 2));
   }
 
   update(snapshot: PrefetchSnapshot): void {
@@ -116,19 +130,20 @@ export class FramePrefetcher {
     this.getUserTileDataFn = snapshot.getUserTileData;
     this.pool = snapshot.pool;
     this.layerSignal = snapshot.signal;
+    this.uploadsThisFrame = 0;
 
     const scheduledIds = new Set(snapshot.scheduledFrames.map((f) => f.id));
 
-    const staleKeys: string[] = [];
+    const toAbort: string[] = [];
 
     for (const [key, entry] of this.inFlight) {
       if (!scheduledIds.has(entry.frameId)) {
         entry.controller.abort();
-        staleKeys.push(key);
+        toAbort.push(key);
       }
     }
 
-    for (const key of staleKeys) {
+    for (const key of toAbort) {
       this.inFlight.delete(key);
     }
 
@@ -136,6 +151,20 @@ export class FramePrefetcher {
 
     const newTasks: TileTask[] = [];
     const interactionMode = snapshot.interactionMode;
+    const coverage = snapshot.coverage ?? 1;
+    const abortRate = this.abortedTasks / (this.totalTasks || 1);
+
+    let effectiveMaxConcurrent = this.maxConcurrent;
+
+    if (abortRate > 0.5 && this.totalTasks > 4) {
+      effectiveMaxConcurrent = Math.max(1, Math.floor(this.maxConcurrent / 2));
+    }
+
+    if (effectiveMaxConcurrent !== this.maxConcurrent) {
+      this.maxConcurrent = effectiveMaxConcurrent;
+    }
+
+    const skipFutureFrames = coverage < 0.5 && interactionMode !== "idle";
 
     for (const frame of snapshot.scheduledFrames) {
       if (frame.id === snapshot.targetFrame.id) {
@@ -145,6 +174,10 @@ export class FramePrefetcher {
       const distanceIndex =
         snapshot.scheduledFrames.indexOf(frame) -
         snapshot.scheduledFrames.indexOf(snapshot.targetFrame);
+
+      if (skipFutureFrames && distanceIndex !== 0) {
+        continue;
+      }
 
       const { quality, bias } = this.qualityForFrame(
         interactionMode,
@@ -172,7 +205,11 @@ export class FramePrefetcher {
           z: tile.z,
           quality,
           bias,
-          priority: this.score(distanceIndex, snapshot.playing, snapshot.playbackRate),
+          priority: this.score(
+            { frameId: frame.id, x: tile.x, y: tile.y, z: tile.z, quality } as TileTask,
+            distanceIndex,
+            snapshot,
+          ),
         });
         this.queuedKeys.add(key);
       }
@@ -193,7 +230,7 @@ export class FramePrefetcher {
           }
 
           if (existing && existing.quality !== "full") {
-            newTasks.push({
+            const upgradeTask: TileTask = {
               frameId: frame.id,
               frameUrl: frame.url,
               requestInit: frame.requestInit,
@@ -202,7 +239,15 @@ export class FramePrefetcher {
               z: tile.z,
               quality: "full",
               bias: 0,
-              priority: 1000,
+              priority: 0,
+            };
+            const distanceIndex =
+              snapshot.scheduledFrames.indexOf(frame) -
+              snapshot.scheduledFrames.indexOf(snapshot.targetFrame);
+
+            newTasks.push({
+              ...upgradeTask,
+              priority: this.score(upgradeTask, distanceIndex, snapshot),
             });
             this.queuedKeys.add(exactKey);
           }
@@ -220,6 +265,8 @@ export class FramePrefetcher {
    * Called on seek / scrub and layer teardown.
    */
   abortAll(): void {
+    this.abortedTasks += this.inFlight.size;
+
     for (const entry of this.inFlight.values()) {
       entry.controller.abort();
     }
@@ -234,12 +281,34 @@ export class FramePrefetcher {
     this.geotiffs.clear();
   }
 
+  stats(): {
+    prefetchTaskCount: number;
+    rttEWMA: number;
+    throughputEWMA: number;
+    abortRate: number;
+  } {
+    const denominator = this.totalTasks || 1;
+
+    return {
+      prefetchTaskCount: this.activeCount + this.queue.length,
+      rttEWMA: this.rttEWMA,
+      throughputEWMA: this.throughputEWMA,
+      abortRate: this.abortedTasks / denominator,
+    };
+  }
+
   private pump(): void {
-    while (this.activeCount < this.maxConcurrent && this.queue.length > 0) {
+    while (
+      this.activeCount < this.maxConcurrent &&
+      this.activeCount < this.maxDecodeTasks &&
+      this.uploadsThisFrame < this.maxGpuUploads &&
+      this.queue.length > 0
+    ) {
       const task = this.queue.shift();
 
       if (task) {
         this.queuedKeys.delete(taskKey(task.frameId, task.x, task.y, task.z));
+        this.uploadsThisFrame += 1;
         this.executeTask(task);
       }
     }
@@ -255,6 +324,9 @@ export class FramePrefetcher {
     const controller = new AbortController();
     this.inFlight.set(key, { controller, frameId: task.frameId });
     this.activeCount += 1;
+    this.totalTasks += 1;
+
+    const t0 = performance.now();
 
     try {
       let geotiff = this.geotiffs.get(task.frameId);
@@ -304,6 +376,8 @@ export class FramePrefetcher {
         pool: this.pool ?? defaultDecoderPool(),
       });
 
+      const elapsed = performance.now() - t0;
+
       if (result && result.texture) {
         this.tileCache.put(task.frameId, task.x, task.y, task.z, {
           x: task.x,
@@ -316,9 +390,15 @@ export class FramePrefetcher {
           height: result.height,
           quality: task.quality,
         });
+
+        if (elapsed > 0 && result.byteLength) {
+          this.recordTelemetry(elapsed, result.byteLength);
+        }
       }
     } catch (err) {
-      if ((err as Error)?.name !== "AbortError" && !isMissingTileError(err)) {
+      if ((err as Error)?.name === "AbortError") {
+        this.abortedTasks += 1;
+      } else if (!isMissingTileError(err)) {
         console.warn("FramePrefetcher: tile fetch failed", err);
       }
     } finally {
@@ -328,21 +408,61 @@ export class FramePrefetcher {
     }
   }
 
+  private recordTelemetry(sampleMs: number, sampleBytes: number): void {
+    const alpha = 0.125;
+
+    if (this.rttEWMA === 0) {
+      this.rttEWMA = sampleMs;
+    } else {
+      this.rttEWMA = alpha * sampleMs + (1 - alpha) * this.rttEWMA;
+    }
+
+    const throughput = sampleBytes / (sampleMs / 1000);
+
+    if (this.throughputEWMA === 0) {
+      this.throughputEWMA = throughput;
+    } else {
+      this.throughputEWMA = alpha * throughput + (1 - alpha) * this.throughputEWMA;
+    }
+  }
+
   private score(
+    task: TileTask,
     distanceIndex: number,
-    playing: boolean,
-    playbackRate: number,
+    snapshot: PrefetchSnapshot,
   ): number {
     const absDistance = Math.abs(distanceIndex);
-    const direction = playing ? Math.sign(playbackRate) || 1 : 0;
-    const isForward =
-      direction === 0
-        ? false
-        : Math.sign(distanceIndex) === direction;
-    const directionalBoost = isForward ? 3 : 0;
-    const distancePenalty = absDistance * 20;
 
-    return 100 - distancePenalty + directionalBoost;
+    let score = 100 - absDistance * 20;
+
+    if (
+      snapshot.interactionMode === "seeking" ||
+      snapshot.interactionMode === "scrubbing"
+    ) {
+      score += absDistance <= 1 ? 20 : -15;
+    } else if (
+      snapshot.interactionMode === "idle" &&
+      task.quality === "preview"
+    ) {
+      score += 5;
+    }
+
+    if (snapshot.playing) {
+      const direction = Math.sign(snapshot.playbackRate) || 1;
+      const isForward = Math.sign(distanceIndex) === direction;
+
+      if (isForward) {
+        score += 10;
+      }
+    }
+
+    if (task.quality === "full") {
+      const existing = this.tileCache.get(task.frameId, task.x, task.y, task.z);
+
+      score += existing && existing.quality === "preview" ? 50 : 10;
+    }
+
+    return Math.max(0, score);
   }
 
   private qualityForFrame(

@@ -171,6 +171,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       prefetcher: new FramePrefetcher(
         tileCache,
         props.schedulerPolicy?.maxNetworkRequests ?? 4,
+        props.schedulerPolicy?.maxDecodeTasks,
+        props.schedulerPolicy?.maxGpuUploadsPerFrame,
       ),
       visibleTileRef: { tiles: [] },
       initialGeotiffUrl: "",
@@ -493,8 +495,37 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     }
   }
 
+  /** Compute the fraction of visible tiles cached at full quality for a frame (0–1). */
+  private computeCoverage(frame: NormalizedTimeCOGFrame | null): number {
+    const state = this.state as TimeCOGLayerState;
+
+    if (!frame) {
+      return 1;
+    }
+
+    const tiles = state.visibleTileRef.tiles;
+
+    if (tiles.length === 0) {
+      return 1;
+    }
+
+    let cached = 0;
+
+    for (const t of tiles) {
+      const entry = state.tileCache.get(frame.id, t.x, t.y, t.z);
+
+      if (entry && entry.quality === "full") {
+        cached += 1;
+      }
+    }
+
+    return cached / tiles.length;
+  }
+
   private emitState(s: TimeCOGLayerState): void {
     const tileStats = s.tileCache.stats();
+    const prefetchStats = s.prefetcher.stats();
+    const totalAccesses = tileStats.hitCount + tileStats.missCount;
 
     const bufferState: TimeCOGBufferState = {
       targetFrame: s.targetFrame,
@@ -511,6 +542,11 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       currentTimeMs: s.currentTimeMs,
       targetFrameId: s.targetFrame?.id ?? null,
       displayFrameId: s.displayFrame?.id ?? null,
+      prefetchTaskCount: prefetchStats.prefetchTaskCount,
+      rttEWMA: prefetchStats.rttEWMA,
+      throughputEWMA: prefetchStats.throughputEWMA,
+      abortRate: prefetchStats.abortRate,
+      cacheHitRate: totalAccesses > 0 ? tileStats.hitCount / totalAccesses : 0,
     };
 
     this.props.onBufferStateChange?.(bufferState);
@@ -538,11 +574,14 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
         this.props as unknown as { pool?: DecoderPool }
       ).pool ?? defaultDecoderPool();
 
+    const coverage = this.computeCoverage(displayFrame);
+
     state.prefetcher.update({
       targetFrame: displayFrame,
       scheduledFrames,
       visibleTiles: state.visibleTileRef.tiles,
       device: this.context.device,
+      coverage,
       getUserTileData: this.props.getTileData as (
         image: GeoTIFF | Overview,
         options: {

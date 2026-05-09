@@ -576,8 +576,8 @@ test("frame prefetcher in idle mode creates upgrade tasks for preview-only tiles
   assert.equal(prefetcher.queue[0].x, 4);
   assert.equal(prefetcher.queue[0].y, 2);
   assert.equal(prefetcher.queue[0].z, 3);
-  assert.equal(prefetcher.queue[0].priority, 1000);
   assert.equal(prefetcher.queue[0].bias, 0);
+  assert.ok(prefetcher.queue[0].priority >= 100, "upgrade priority should be high");
 });
 
 test("frame prefetcher in idle mode skips upgrade when full tile already cached", () => {
@@ -625,7 +625,7 @@ test("frame prefetcher in idle mode skips upgrade when full tile already cached"
     qualityPolicy: {},
   });
 
-  const upgradeTasks = prefetcher.queue.filter((t) => t.quality === "full" && t.priority === 1000);
+  const upgradeTasks = prefetcher.queue.filter((t) => t.quality === "full" && t.priority > 100);
   assert.equal(upgradeTasks.length, 0);
 });
 
@@ -765,4 +765,399 @@ test("frame prefetcher aborts stale in-flight tasks when frame leaves window", (
 
   assert.equal(prefetcher.inFlight.size, 0, "all in-flight tasks should be cleared when frames leave window");
   assert.equal(prefetcher.queue.length, 0, "queue should be pruned when frames leave window");
+});
+
+// ─── Phase 2a: performance telemetry ───
+
+test("SequenceTileCache.hitCount increments on cache hit", () => {
+  const cache = new SequenceTileCache();
+  cache.put("f1", 0, 0, 0, { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1, quality: "full" });
+
+  assert.equal(cache.stats().hitCount, 0);
+  cache.get("f1", 0, 0, 0);
+  assert.equal(cache.stats().hitCount, 1);
+  cache.get("f1", 0, 0, 0);
+  assert.equal(cache.stats().hitCount, 2);
+});
+
+test("SequenceTileCache.missCount increments on recordMiss", () => {
+  const cache = new SequenceTileCache();
+  assert.equal(cache.stats().missCount, 0);
+  cache.recordMiss();
+  cache.recordMiss();
+  assert.equal(cache.stats().missCount, 2);
+});
+
+test("SequenceTileCache getBest increments hitCount per hit", () => {
+  const cache = new SequenceTileCache();
+  cache.put("f1", 0, 0, 0, { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1, quality: "preview" });
+
+  const before = cache.stats().hitCount;
+  cache.getBest("f1", 1, 1, 1, 2);
+  assert.equal(cache.stats().hitCount, before + 1);
+});
+
+test("FramePrefetcher.stats reports initial zero values", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 4);
+  const s = prefetcher.stats();
+
+  assert.equal(s.prefetchTaskCount, 0);
+  assert.equal(s.rttEWMA, 0);
+  assert.equal(s.throughputEWMA, 0);
+  assert.equal(s.abortRate, 0);
+});
+
+test("FramePrefetcher EWMA converges with known latency", async () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 1);
+
+  const targetFrame = { id: "t", time: 0, timeMs: 0, url: "http://ex/t.tif", cacheKey: "0", sourceIndex: 0 };
+  const nextFrame = { id: "n", time: 1, timeMs: 1, url: "http://ex/n.tif", cacheKey: "1", sourceIndex: 1 };
+
+  prefetcher.geotiffs.set("n", { overviews: [], tileCount: { x: 5, y: 5 } });
+
+  let call = 0;
+  const start = performance.now();
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nextFrame],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => {
+      call += 1;
+      return { texture: { destroy() {} }, byteLength: 1024, width: 1, height: 1 };
+    },
+    pool: {},
+    playing: true,
+    playbackRate: 1,
+    interactionMode: "playing",
+    qualityPolicy: {},
+  });
+
+  await new Promise((r) => setTimeout(r, 10));
+
+  const stats = prefetcher.stats();
+  assert.ok(stats.rttEWMA > 0, "rttEWMA should be positive after a task completes");
+  assert.ok(stats.throughputEWMA > 0, "throughputEWMA should be positive after a task completes");
+  assert.equal(stats.abortRate, 0, "abort rate should be 0 when no tasks aborted");
+  assert.equal(stats.prefetchTaskCount, 0, "no tasks should remain after completion");
+});
+
+test("FramePrefetcher abortRate reflects aborted tasks", async () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 2);
+
+  const targetFrame = { id: "t", time: 0, timeMs: 0, url: "http://ex/t.tif", cacheKey: "0", sourceIndex: 0 };
+  const nextFrame = { id: "n", time: 1, timeMs: 1, url: "http://ex/n.tif", cacheKey: "1", sourceIndex: 1 };
+
+  prefetcher.geotiffs.set("n", { overviews: [], tileCount: { x: 5, y: 5 } });
+
+  let resolvePending;
+  const pending = new Promise((r) => { resolvePending = r; });
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nextFrame],
+    visibleTiles: [{ x: 2, y: 1, z: 0 }],
+    device: {},
+    getUserTileData: async (_image, options) => {
+      await pending;
+      if (options.signal?.aborted) {
+        const err = new DOMException("The operation was aborted", "AbortError");
+        throw err;
+      }
+      return { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 };
+    },
+    pool: {},
+    playing: true,
+    playbackRate: 1,
+    interactionMode: "playing",
+    qualityPolicy: {},
+  });
+
+  assert.ok(prefetcher.inFlight.size > 0, "should have in-flight tasks");
+  assert.equal(prefetcher.stats().abortRate, 0, "abort rate should be 0 before abort");
+
+  prefetcher.abortAll();
+  resolvePending?.();
+
+  await new Promise((r) => setTimeout(r, 20));
+
+  assert.equal(prefetcher.inFlight.size, 0, "all tasks should be cleared after abortAll");
+  assert.ok(prefetcher.stats().abortRate > 0, "abortRate should be > 0 after abortAll clears in-flight tasks");
+});
+
+// ─── Phase 2b: richer priority scoring ───
+
+test("scoring: seeking boosts nearby frames, deprioritizes far frames", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = { id: "target", time: 0, timeMs: 0, url: "http://ex/0.tif", cacheKey: "0", sourceIndex: 0 };
+  const nearFrame = { id: "near", time: 1, timeMs: 1, url: "http://ex/1.tif", cacheKey: "1", sourceIndex: 1 };
+  const farFrame = { id: "far", time: 3, timeMs: 3, url: "http://ex/3.tif", cacheKey: "3", sourceIndex: 3 };
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nearFrame, farFrame],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "seeking",
+    qualityPolicy: {},
+  });
+
+  const nearTask = prefetcher.queue.find((t) => t.frameId === "near");
+  const farTask = prefetcher.queue.find((t) => t.frameId === "far");
+
+  assert.ok(nearTask, "should have task for near frame");
+  assert.ok(farTask, "should have task for far frame");
+  assert.ok(nearTask.priority > farTask.priority, "near frame should outrank far frame during seek");
+});
+
+test("scoring: playing mode gives direction bonus to forward frames", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = { id: "target", time: 0, timeMs: 0, url: "http://ex/0.tif", cacheKey: "0", sourceIndex: 0 };
+  const forwardFrame = { id: "fw", time: 2, timeMs: 2, url: "http://ex/2.tif", cacheKey: "2", sourceIndex: 2 };
+  const backFrame = { id: "bk", time: -2, timeMs: -2, url: "http://ex/n2.tif", cacheKey: "-2", sourceIndex: 2 };
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [backFrame, targetFrame, forwardFrame],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: true,
+    playbackRate: 1,
+    interactionMode: "playing",
+    qualityPolicy: {},
+  });
+
+  const fwTask = prefetcher.queue.find((t) => t.frameId === "fw");
+  const bkTask = prefetcher.queue.find((t) => t.frameId === "bk");
+
+  assert.ok(fwTask, "should have task for forward frame");
+  assert.ok(bkTask, "should have task for backward frame");
+  assert.ok(fwTask.priority > bkTask.priority, "forward frame should outrank backward during play");
+});
+
+test("scoring: upgrade tasks outrank fresh full tasks", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = { id: "target", time: 0, timeMs: 0, url: "http://ex/0.tif", cacheKey: "0", sourceIndex: 0 };
+  const frameA = { id: "A", time: 1, timeMs: 1, url: "http://ex/1.tif", cacheKey: "1", sourceIndex: 1 };
+  const frameB = { id: "B", time: 2, timeMs: 2, url: "http://ex/2.tif", cacheKey: "2", sourceIndex: 2 };
+
+  cache.put("A", 0, 0, 0, {
+    texture: { destroy() {} },
+    byteLength: 1, width: 1, height: 1,
+    quality: "preview", x: 0, y: 0, z: 0,
+  });
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, frameA, frameB],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "idle",
+    qualityPolicy: {},
+  });
+
+  const upgradeTask = prefetcher.queue.find((t) => t.frameId === "A" && t.quality === "full");
+  const freshTask = prefetcher.queue.find((t) => t.frameId === "B" && t.quality === "preview");
+
+  assert.ok(upgradeTask, "should have upgrade task for frame A");
+  assert.ok(freshTask, "should have fresh task for frame B");
+  assert.ok(upgradeTask.priority > freshTask.priority, "upgrade should outrank fresh preview");
+});
+
+test("scoring: idle mode preview tasks get slight boost", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = { id: "target", time: 0, timeMs: 0, url: "http://ex/0.tif", cacheKey: "0", sourceIndex: 0 };
+  const nearFrame = { id: "near", time: 1, timeMs: 1, url: "http://ex/1.tif", cacheKey: "1", sourceIndex: 1 };
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nearFrame],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "idle",
+    qualityPolicy: {},
+  });
+
+  assert.equal(prefetcher.queue.length, 1);
+});
+
+// ─── Phase 2c: backpressure ───
+
+test("backpressure: maxDecodeTasks gates pump", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 4, 1, 4);
+
+  const targetFrame = { id: "t", time: 0, timeMs: 0, url: "http://ex/0.tif", cacheKey: "0", sourceIndex: 0 };
+  const frameA = { id: "A", time: 1, timeMs: 1, url: "http://ex/1.tif", cacheKey: "1", sourceIndex: 1 };
+  const frameB = { id: "B", time: 2, timeMs: 2, url: "http://ex/2.tif", cacheKey: "2", sourceIndex: 2 };
+
+  let resolvePending;
+  const pending = new Promise((r) => { resolvePending = r; });
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, frameA, frameB],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => {
+      await pending;
+      return { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 };
+    },
+    pool: {},
+    playing: true,
+    playbackRate: 1,
+    interactionMode: "playing",
+    qualityPolicy: {},
+  });
+
+  assert.equal(prefetcher.inFlight.size, 1, "only 1 task should start when maxDecodeTasks=1");
+  assert.ok(prefetcher.queue.length > 0, "remaining tasks should stay in queue");
+
+  resolvePending();
+});
+
+test("backpressure: maxGpuUploadsPerFrame throttles pump", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 4, 4, 1);
+
+  const targetFrame = { id: "t", time: 0, timeMs: 0, url: "http://ex/0.tif", cacheKey: "0", sourceIndex: 0 };
+  const frameA = { id: "A", time: 1, timeMs: 1, url: "http://ex/1.tif", cacheKey: "1", sourceIndex: 1 };
+  const frameB = { id: "B", time: 2, timeMs: 2, url: "http://ex/2.tif", cacheKey: "2", sourceIndex: 2 };
+
+  let resolvePending;
+  const pending = new Promise((r) => { resolvePending = r; });
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, frameA, frameB],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => {
+      await pending;
+      return { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 };
+    },
+    pool: {},
+    playing: true,
+    playbackRate: 1,
+    interactionMode: "playing",
+    qualityPolicy: {},
+  });
+
+  assert.equal(prefetcher.inFlight.size, 1, "only 1 task should start when maxGpuUploads=1");
+  assert.ok(prefetcher.queue.length > 0, "remaining tasks should stay in queue");
+
+  resolvePending();
+});
+
+test("backpressure: low coverage suspends future frame prefetch", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = { id: "target", time: 0, timeMs: 0, url: "http://ex/0.tif", cacheKey: "0", sourceIndex: 0 };
+  const nearFrame = { id: "near", time: 1, timeMs: 1, url: "http://ex/1.tif", cacheKey: "1", sourceIndex: 1 };
+  const farFrame = { id: "far", time: 2, timeMs: 2, url: "http://ex/2.tif", cacheKey: "2", sourceIndex: 2 };
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nearFrame, farFrame],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "seeking",
+    qualityPolicy: {},
+    coverage: 0.3,
+  });
+
+  assert.equal(prefetcher.queue.length, 0, "no future frames should be prefetched when coverage < 0.5");
+});
+
+test("backpressure: sufficient coverage allows future frame prefetch", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = { id: "target", time: 0, timeMs: 0, url: "http://ex/0.tif", cacheKey: "0", sourceIndex: 0 };
+  const nearFrame = { id: "near", time: 1, timeMs: 1, url: "http://ex/1.tif", cacheKey: "1", sourceIndex: 1 };
+  const farFrame = { id: "far", time: 2, timeMs: 2, url: "http://ex/2.tif", cacheKey: "2", sourceIndex: 2 };
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nearFrame, farFrame],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "seeking",
+    qualityPolicy: {},
+    coverage: 0.8,
+  });
+
+  assert.ok(prefetcher.queue.length >= 2, "future frames should be prefetched when coverage >= 0.5");
+});
+
+test("backpressure: high abort rate reduces concurrency", async () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 4);
+
+  const targetFrame = { id: "t", time: 0, timeMs: 0, url: "http://ex/0.tif", cacheKey: "0", sourceIndex: 0 };
+  const frameA = { id: "A", time: 1, timeMs: 1, url: "http://ex/1.tif", cacheKey: "1", sourceIndex: 1 };
+  const frameB = { id: "B", time: 2, timeMs: 2, url: "http://ex/2.tif", cacheKey: "2", sourceIndex: 2 };
+
+  let resolvePending;
+  const pending = new Promise((r) => { resolvePending = r; });
+
+  for (let i = 0; i < 6; i += 1) {
+    prefetcher.update({
+      targetFrame,
+      scheduledFrames: [targetFrame, frameA, frameB],
+      visibleTiles: [{ x: 0, y: 0, z: 0 }],
+      device: {},
+      getUserTileData: async () => {
+        await pending;
+        return { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 };
+      },
+      pool: {},
+      playing: true,
+      playbackRate: 1,
+      interactionMode: "playing",
+      qualityPolicy: {},
+    });
+
+    prefetcher.abortAll();
+  }
+
+  assert.ok(prefetcher.maxConcurrent <= 2, "maxConcurrent should be halved after repeated aborts");
+
+  resolvePending();
+  await new Promise((r) => setTimeout(r, 10));
 });

@@ -30,6 +30,8 @@ export type TileCacheStats = {
   totalBytes: number;
   frameIds: string[];
   protectedFrameIds: string[];
+  hitCount: number;
+  missCount: number;
 };
 
 /**
@@ -88,6 +90,8 @@ export class SequenceTileCache {
   private retiredTextures = new Set<Texture>();
   private protected = new Set<string>();
   private policy: TileCachePolicy = {};
+  private hitCount = 0;
+  private missCount = 0;
 
   constructor(policy: TileCachePolicy = {}) {
     this.policy = policy;
@@ -261,6 +265,8 @@ export class SequenceTileCache {
       totalBytes,
       frameIds: [...frameIds],
       protectedFrameIds: [...this.protected],
+      hitCount: this.hitCount,
+      missCount: this.missCount,
     };
   }
 
@@ -279,9 +285,15 @@ export class SequenceTileCache {
 
     if (tile) {
       tile.lastAccessMs = Date.now();
+      this.hitCount += 1;
     }
 
     return tile;
+  }
+
+  /** Record a cache miss from a caller that will proceed to fetch the tile. */
+  recordMiss(): void {
+    this.missCount += 1;
   }
 
   private evict(): void {
