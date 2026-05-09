@@ -286,11 +286,11 @@ function render(): void {
         opacity: DISPLAY_OPACITY,
         missingFramePolicy: "nearest",
         bufferPolicy: {
-          // backwardFrames: 1,
-          // forwardFrames: 3,
+          backwardFrames: 1,
+          forwardFrames: 3,
         },
         cachePolicy: {
-          // maxFrames: 12,
+          maxFrames: 12,
         },
         onStats: (stats) => {
           statsOutput.value = `${stats.readyFrameCount}/${stats.frameCount} ready, ${stats.scheduledFrameCount} scheduled`;
