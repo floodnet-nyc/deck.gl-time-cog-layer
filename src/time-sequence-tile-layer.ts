@@ -122,6 +122,7 @@ export class TimeSequenceTileLayer<
       renderSubLayers,
       updateTriggers: {
         getTileData: currentFrameId,
+        all: Math.round(this.context.viewport?.zoom ?? 0),
         renderSubLayers: updateTriggers?.renderTile,
       },
       tileSize: (this.props as Record<string, unknown>).tileSize as
