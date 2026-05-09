@@ -71,29 +71,6 @@ type PrecipIndex = {
   }>;
 };
 
-function padToAlignment(
-  data: Uint8Array | Uint16Array,
-  width: number,
-  height: number,
-  bytesPerPixel: number,
-): Uint8Array | Uint16Array {
-  const rowBytes = width * bytesPerPixel;
-  const alignedRowBytes = Math.ceil(rowBytes / 4) * 4;
-
-  if (alignedRowBytes === rowBytes) {
-    return data;
-  }
-
-  const src = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  const dstBytes = new Uint8Array(alignedRowBytes * height);
-
-  for (let row = 0; row < height; row += 1) {
-    dstBytes.set(src.subarray(row * rowBytes, (row + 1) * rowBytes), row * alignedRowBytes);
-  }
-
-  return data instanceof Uint16Array ? new Uint16Array(dstBytes.buffer) : dstBytes;
-}
-
 async function getPrecipTileData(
   image: GeoTIFF | Overview,
   { device, x, y, signal, pool }: GetTileDataOptions,
@@ -110,9 +87,9 @@ async function getPrecipTileData(
     throw new Error("Band-separate precipitation tiles are not supported.");
   }
 
-  const alignedData = padToAlignment(array.data as Uint8Array | Uint16Array, width, height, 2);
+  const data = array.data as Uint8Array | Uint16Array;
   const texture = device.createTexture({
-    data: alignedData,
+    data,
     format: geotiffTexture.inferTextureFormat(1, [16], [1]),
     width,
     height,
@@ -122,12 +99,11 @@ async function getPrecipTileData(
     },
   });
   let maskTexture: Texture | undefined;
-  let byteLength = alignedData.byteLength;
+  let byteLength = data.byteLength;
 
   if (mask) {
-    const alignedMask = padToAlignment(mask, width, height, 1) as Uint8Array;
     maskTexture = device.createTexture({
-      data: alignedMask,
+      data: mask,
       format: "r8unorm",
       width,
       height,
@@ -136,7 +112,7 @@ async function getPrecipTileData(
         magFilter: "nearest",
       },
     });
-    byteLength += alignedMask.byteLength;
+    byteLength += mask.byteLength;
   }
 
   return {
