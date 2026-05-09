@@ -12,6 +12,18 @@ export type FrameCacheEntry = {
   lastAccessMs: number;
 };
 
+/**
+ * Legacy frame-level metadata cache.
+ *
+ * Originally used by the first `TimeCOGLayer` implementation where
+ * each frame switch created a new `COGLayer` instance.  Now
+ * superseded by `SequenceTileCache` for tile-level GPU texture
+ * caching.
+ *
+ * Retained for backwards-compatible `TimeCOGStats` / buffer state
+ * reporting and for the lightweight frame entry-count eviction
+ * policy tests.
+ */
 export class FrameCache {
   readonly entries = new Map<string, FrameCacheEntry>();
   private policy: TimeCOGCachePolicy;

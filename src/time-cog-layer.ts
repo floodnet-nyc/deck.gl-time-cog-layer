@@ -27,25 +27,126 @@ import type {
 
 type TileCoord = { x: number; y: number; z: number };
 
+/**
+ * Internal state for {@link TimeCOGLayer}.
+ *
+ * The state is intentionally flat so that deck.gl can shallow-diff it
+ * efficiently across the render / update cycle.  The three “shared
+ * infrastructure” fields — `tileCache`, `prefetcher`, and
+ * `visibleTileRef` — are created once in `initializeState` and live
+ * for the full lifetime of the layer.  The sublayer
+ * (`TimeSequenceTileLayer`) reads from them via props, so they must
+ * remain the **same object** across renders.
+ */
 type TimeCOGLayerState = {
+  /** Full ordered catalog of every frame (time → URL).  Never mutated, only replaced when `frames` prop changes. */
   catalog: NormalizedTimeCOGFrame[];
+
+  /**
+   * The shared GPU / CPU tile cache.
+   * Stores decoded textures keyed by `(frameId, tileX, tileY, zoom)`.
+   * Both the sublayer (`_getTileDataCallback`) and the
+   * `FramePrefetcher` read from and write to this cache, which is why
+   * it lives on the parent composite layer.
+   */
   tileCache: SequenceTileCache;
+
+  /**
+   * Background prefetch pipeline.
+   * On every `updateState` it receives the current playback snapshot
+   * (target frame, scheduled frames, visible tiles, device, etc.) and
+   * proactively fetches tiles for nearby frames.
+   */
   prefetcher: FramePrefetcher;
+
+  /**
+   * Shared mutable reference that the inner TileLayer updates via its
+   * `onViewportLoad` callback.  The parent layer reads this on each
+   * `updateState` to feed the prefetcher.
+   */
   visibleTileRef: { tiles: TileCoord[] };
+
+  /**
+   * The GeoTIFF URL of the very first displayed frame.
+   * This URL is passed as the `geotiff` prop to the persistent
+   * `COGLayer` sublayer so that the shared tileset descriptor is
+   * parsed **once** and reused for the lifetime of the layer.
+   * Changing the `geotiff` URL would cause COGLayer to re-parse the
+   * header, tearing down the descriptor and inner TileLayer.
+   */
   initialGeotiffUrl: string;
+
+  /** The current playback time, as a millisecond epoch. */
   currentTimeMs: number;
+
+  /** The frame closest to `currentTimeMs` in the catalog. */
   targetFrame: NormalizedTimeCOGFrame | null;
+
+  /**
+   * The frame that is actually visible on screen.
+   * May differ from `targetFrame` when the configured
+   * `missingFramePolicy` resolves to a fallback (e.g. `hold-last`).
+   */
   displayFrame: NormalizedTimeCOGFrame | null;
+
+  /** Frames selected for prefetching, sorted by priority (target first). */
   scheduledFrames: NormalizedTimeCOGFrame[];
+
+  /** True when the requested time has no exact match in the catalog. */
   missing: boolean;
+
+  /** Tracks the most recently displayed frame so that `onFrameDisplayed` only fires on transitions. */
   lastDisplayedFrameId: string | null;
 };
 
 const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
 
+/**
+ * A deck.gl `CompositeLayer` that orchestrates time-indexed playback of
+ * Cloud-Optimized GeoTIFF (COG) sequences.
+ *
+ * ## Architecture
+ *
+ * `TimeCOGLayer` owns three long-lived infrastructure objects that it
+ * injects into a single persistent `TimeSequenceTileLayer` sublayer:
+ *
+ * 1. **`SequenceTileCache`** — GPU texture cache keyed by
+ *    `(frameId, x, y, z)`.  Serves instant cache hits when the
+ *    display frame changes, avoiding the white flash that would occur
+ *    if every frame switch destroyed and re-created the tile layer.
+ *
+ * 2. **`FramePrefetcher`** — Background pipeline that scores and
+ *    fetches tiles for nearby frames before they are needed.
+ *
+ * 3. **`visibleTileRef`** — Shared mutable state that the inner
+ *    `TileLayer` updates whenever the visible tile set changes;
+ *    used to feed the prefetcher with the correct tile coordinates.
+ *
+ * ## Why not one COGLayer per frame?
+ *
+ * Creating a new `COGLayer` for each displayed frame (the naive
+ * approach) destroys all GPU textures, decoded tiles, and in-flight
+ * requests on every frame switch.  The resulting cold-start fetch path
+ * produces the jarring flicker that this layer exists to eliminate.
+ *
+ * Instead, `TimeCOGLayer` creates one `TimeSequenceTileLayer` (which
+ * extends `COGLayer`) with a **constant** `id`.  deck.gl therefore
+ * never destroys it.  Frame changes are communicated by updating
+ * `currentFrameId` and `currentFrameUrl` on the sublayer, which in
+ * turn propagates them to the inner `TileLayer`'s `updateTriggers.all`.
+ * The `updateTriggers` mechanism causes `tileset.reloadAll()` which
+ * keeps old tile content visible **until** new data is ready — giving
+ * a flicker-free transition.
+ */
 export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   static layerName = "TimeCOGLayer";
 
+  /**
+   * Creates the three shared infrastructure objects — `tileCache`,
+   * `prefetcher`, and `visibleTileRef` — that live for the full
+   * lifetime of the layer and are injected into the persistent
+   * sublayer on every render.
+   */
   initializeState(): void {
     const props = this.props;
     const tileCache = new SequenceTileCache(props.cachePolicy);
@@ -98,6 +199,19 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     }
   }
 
+  /**
+   * Returns the single persistent `TimeSequenceTileLayer` sublayer.
+   *
+   * The sublayer's `id` is **constant** (`${this.props.id}-tiles`)
+   * so that deck.gl reuses the same layer instance across frame
+   * switches rather than destroying / recreating it.  Frame changes
+   * are communicated through the `currentFrameId` and
+   * `currentFrameUrl` props.
+   *
+   * The `geotiff` prop is set to the very first frame's URL and
+   * never changes.  This ensures `COGLayer` computes the shared
+   * tileset descriptor exactly once.
+   */
   renderLayers(): Layer | LayersList | null {
     const state = this.state as TimeCOGLayerState;
     const frame = state.displayFrame;
@@ -126,12 +240,25 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     } as object);
   }
 
+  /**
+   * Aborts all in-flight prefetch tasks and destroys GPU textures.
+   */
   finalizeState(): void {
     const state = this.state as TimeCOGLayerState;
     state.prefetcher?.abortAll();
     state.tileCache?.destroy();
   }
 
+  /**
+   * Resolves the target and display frames from the current playback
+   * time, computes the scheduled frame window, updates cache
+   * protection, fires callbacks, and primes the prefetcher.
+   *
+   * This is the main orchestration point — called on every prop
+   * change that affects timing (`currentTime`, `playing`,
+   * `playbackRate`, `bufferPolicy`, `missingFramePolicy`) or the
+   * frame catalog itself.
+   */
   private updateFrameState(
     catalog: NormalizedTimeCOGFrame[],
   ): void {
@@ -351,6 +478,13 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     } as ReturnType<typeof this.cogLayerProps>;
   }
 
+  /**
+   * Returns a snapshot of the current tile state for the diagnostic
+   * minimap.
+   *
+   * @param windowSize - Number of frame columns to include in the
+   *   window, centered on the playhead (default 60).
+   */
   getDiagnosticSnapshot(windowSize = 60): {
     tileCache: SequenceTileCache;
     visibleTiles: { x: number; y: number; z: number }[];

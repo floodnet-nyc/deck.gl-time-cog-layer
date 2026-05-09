@@ -20,17 +20,64 @@ import { hasTile, imageForZ, isMissingTileError } from "./tile-utils.js";
 
 type TileCoord = { x: number; y: number; z: number };
 
+/**
+ * Custom props injected by {@link TimeCOGLayer} into the persistent
+ * sublayer.  These carry the dynamic frame identity, the shared tile
+ * cache, and the mutable visible-tile reference so that every
+ * `getTileData` invocation can check the cache for the current frame.
+ */
 export type TimeSequenceTileLayerProps = {
+  /** Shared GPU tile cache — the key integration point between the sublayer and the background prefetcher. */
   sequenceTileCache: SequenceTileCache;
+
+  /** Stable identifier of the currently displayed frame (its catalog `id`).  Used as the cache prefix and in `updateTriggers.all`. */
   currentFrameId: string;
+
+  /** URL of the currently displayed frame's COG.  Opened lazily for tile fetches. */
   currentFrameUrl: string;
+
+  /** Optional `RequestInit` forwarded to `fetch()` when opening this frame's COG (e.g. SAS headers). */
   currentFrameRequestInit?: RequestInit;
+
+  /** Mutable reference updated by the inner TileLayer's `onViewportLoad` callback. */
   visibleTileRef: { tiles: TileCoord[] };
+
+  /** Optional callback fired whenever the visible tile set changes. */
   onVisibleTilesChange?: () => void;
 };
 
 const TIME_SEQ_TILE_LAYER_NAME = "TimeSequenceTileLayer";
 
+/**
+ * The persistent sublayer that `TimeCOGLayer` renders.
+ *
+ * Extends `COGLayer` to inherit GeoTIFF header parsing and tileset
+ * descriptor computation (executed once for the first frame and
+ * reused).  Overrides three core methods:
+ *
+ * ### `renderLayers()`
+ * Replaces the base `RasterTileLayer.renderLayers` to construct the
+ * inner `TileLayer` with a **viewport-aware** `updateTriggers.all`.
+ * The `all` key is composed as
+ * `${currentFrameId}:${Math.round(viewport.zoom)}`, so that
+ * `tileset.reloadAll()` fires on **both** frame changes and zoom
+ * changes.  Without the zoom component, tiles from a previous zoom
+ * level would persist in the tileset cache when the user zooms out,
+ * producing a frozen ghost raster.
+ *
+ * ### `_getTileDataCallback()`
+ * Wraps the user-supplied (or inferred-default) `getTileData` in a
+ * cache-aware fetcher.  On cache hit the wrapper returns the stored
+ * GPU textures synchronously, which is what enables flicker-free
+ * frame switches: the inner TileLayer keeps the old tile content
+ * visible during `reloadAll()` until the new data arrives, which
+ * happens instantly because it was prefetched.
+ *
+ * ### `_renderTileCallback()`
+ * Simple pass-through to the user's `renderTile` or the inferred
+ * default so that existing colormap / shader pipelines work
+ * unchanged.
+ */
 export class TimeSequenceTileLayer<
   DataT extends MinimalTileData = MinimalTileData,
 > extends COGLayer<DataT> {

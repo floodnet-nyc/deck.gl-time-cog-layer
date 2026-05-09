@@ -1,7 +1,16 @@
 import type { Texture } from "@luma.gl/core";
 
+/** Whether a cached tile is a coarse preview or a full-resolution tile. */
 export type TileQuality = "preview" | "full";
 
+/**
+ * A single cached tile entry.
+ *
+ * The `x`, `y`, `z` fields are stored redundantly (they also appear
+ * in the cache key) so that diagnostic code can enumerate entries
+ * without parsing string keys.  `lastAccessMs` drives the
+ * LRU-inspired eviction policy.
+ */
 export type CachedTile = {
   texture: Texture;
   mask?: Texture;
@@ -23,10 +32,20 @@ export type TileCacheStats = {
   protectedFrameIds: string[];
 };
 
+/**
+ * Configuration knobs for the tile cache.
+ *
+ * Eviction is governed by up to four independent limits; the first
+ * limit that is exceeded triggers eviction.
+ */
 export type TileCachePolicy = {
+  /** Maximum total bytes of cached tile data. */
   memoryBytes?: number;
+  /** Maximum number of distinct frames allowed in the cache.  Evicts the least-recently-accessed frame first. */
   maxFrames?: number;
+  /** Maximum number of individual tile entries across all frames. */
   maxTileEntries?: number;
+  /** Maximum total tile count (alias / complement to `maxTileEntries`). */
   maxTiles?: number;
 };
 
@@ -39,6 +58,31 @@ function tileKey(
   return `${frameId}:${x}:${y}:${z}`;
 }
 
+/**
+ * GPU-texture cache keyed by `(frameId, tileX, tileY, zoom)`.
+ *
+ * ## Role in the architecture
+ *
+ * Both the `TimeSequenceTileLayer` sublayer and the `FramePrefetcher`
+ * share a single instance of this cache.  When the display frame
+ * changes and `tileset.reloadAll()` fires, the sublayer's
+ * `getTileData` wrapper checks the cache for the new frame before
+ * falling back to a COG fetch.  Cache hits return instantly (the
+ * textures are already on the GPU), which is what makes frame
+ * transitions flicker-free.
+ *
+ * ## Eviction policy
+ *
+ * Entries marked as **protected** (current frame + immediate
+ * neighbours) are never evicted.  Among unprotected entries, the
+ * policy prefers evicting far-future full-resolution tiles first,
+ * then far-past full-resolution tiles, then preview tiles.  This
+ * matches the research recommendation: keep close-to-playhead preview
+ * tiles and sacrifice distant full-res tiles.
+ *
+ * Destroying a cache entry calls `texture.destroy()` on the
+ * underlying luma.gl `Texture`, releasing GPU memory.
+ */
 export class SequenceTileCache {
   private tiles = new Map<string, CachedTile>();
   private retiredTextures = new Set<Texture>();
@@ -54,6 +98,10 @@ export class SequenceTileCache {
     this.evict();
   }
 
+  /**
+   * Retrieve a cached tile.  Updates `lastAccessMs` so that the
+   * entry is considered recently used for eviction purposes.
+   */
   get(
     frameId: string,
     x: number,
@@ -70,6 +118,11 @@ export class SequenceTileCache {
     return tile;
   }
 
+  /**
+   * Store a tile.  If an entry already exists at the same key, the
+   * new tile is only stored when it represents a quality upgrade
+   * (preview → full).  The old texture is destroyed.
+   */
   put(
     frameId: string,
     x: number,
@@ -101,11 +154,20 @@ export class SequenceTileCache {
     this.evict();
   }
 
+  /**
+   * Mark a set of frame IDs as immune to eviction.
+   * Typically called with the current display frame and the first
+   * few scheduled frames after each `updateState`.
+   */
   protect(frameIds: string[]): void {
     this.protected = new Set(frameIds);
     this.evict();
   }
 
+  /**
+   * Aggressively evict all tiles belonging to a specific frame,
+   * destroying their GPU textures.  Useful on seek / scrub.
+   */
   purgeFrame(frameId: string): void {
     for (const [key, tile] of this.tiles) {
       if (tile.frameId === frameId) {
@@ -116,6 +178,10 @@ export class SequenceTileCache {
     }
   }
 
+  /**
+   * Destroy all GPU textures and clear the cache.
+   * Called from `TimeCOGLayer.finalizeState`.
+   */
   destroy(): void {
     for (const tile of this.tiles.values()) {
       this.retireTile(tile);

@@ -1,5 +1,12 @@
 import type { SequenceTileCache } from "./sequence-tile-cache.js";
 
+/**
+ * Snapshot of tile state consumed by {@link renderTileDiagnostics}.
+ *
+ * The snapshot bundles the shared cache, visible tile coordinates,
+ * the catalog, and a playhead position so that the diagnostic canvas
+ * can render a complete temporal minimap.
+ */
 export type TileDiagSnapshot = {
   tileCache: SequenceTileCache;
   visibleTiles: { x: number; y: number; z: number }[];
@@ -23,6 +30,21 @@ const COLORS = {
   bg: "#0f0f1a",
 };
 
+/**
+ * Render a tile-state minimap onto an HTML canvas.
+ *
+ * **Axes:**
+ * - **X axis** = time (frame columns from the catalog window).
+ * - **Y axis** = zoom level (coarsest at bottom, finest at top).
+ * - **Color**  = per-tile state (green = cached full, blue = cached
+ *   preview, red = visible-but-loading, dark = not loaded).
+ *
+ * A pink playhead line marks the current display frame.  Frame index
+ * labels are shown every ~10 columns.  A legend and summary text
+ * (`past: N cached | future: N prefetched`) answer the two key
+ * operational questions: how far ahead are we, and how far back do we
+ * retain.
+ */
 export function renderTileDiagnostics(
   canvas: HTMLCanvasElement,
   state: TileDiagSnapshot,

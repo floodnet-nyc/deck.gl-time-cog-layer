@@ -6,6 +6,7 @@ import type {
   TimeValue,
 } from "./types.js";
 
+/** SAS tokens and other volatile auth params that should be stripped from cache keys. */
 const VOLATILE_QUERY_PARAMS = new Set([
   "sig",
   "signature",
@@ -27,6 +28,10 @@ const VOLATILE_QUERY_PARAMS = new Set([
   "x-amz-signedheaders",
 ]);
 
+/**
+ * Normalize a `TimeValue` to a millisecond epoch.
+ * Accepts `number`, `string` (ISO 8601), or `Date`.
+ */
 export function parseTimeValue(value: TimeValue): number {
   const timeMs =
     value instanceof Date
@@ -42,6 +47,10 @@ export function parseTimeValue(value: TimeValue): number {
   return timeMs;
 }
 
+/**
+ * Deduplicate, sort, and canonically normalise the raw frame list.
+ * Duplicate IDs win the last-declared URL.
+ */
 export function normalizeFrameCatalog(
   frames: readonly TimeCOGFrame[],
 ): NormalizedTimeCOGFrame[] {
@@ -72,6 +81,10 @@ export function normalizeFrameCatalog(
   });
 }
 
+/**
+ * Strip SAS / auth query parameters from a URL so that cache keys
+ * remain stable across token rotations.
+ */
 export function canonicalizeUrl(input: string): string {
   try {
     const url = new URL(input, globalThis.location?.href);
@@ -89,6 +102,9 @@ export function canonicalizeUrl(input: string): string {
   }
 }
 
+/**
+ * Binary search for the nearest frame to a given time.
+ */
 export function findNearestFrameIndex(
   catalog: readonly NormalizedTimeCOGFrame[],
   timeMs: number,
@@ -156,6 +172,14 @@ export function findPreviousFrameIndex(
   return previous;
 }
 
+/**
+ * Resolve a timestamp into target and display frames according to
+ * the configured `MissingFramePolicy`.
+ *
+ * `"hold-last"` (default): show the most recent frame at or before
+ * the requested time.  This is the least visually disruptive policy
+ * for transient gaps.
+ */
 export function resolveFrameForTime(
   catalog: readonly NormalizedTimeCOGFrame[],
   timeMs: number,

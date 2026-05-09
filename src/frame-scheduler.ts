@@ -12,6 +12,22 @@ export type ScheduledFrame = {
 const DEFAULT_BACKWARD_FRAMES = 2;
 const DEFAULT_FORWARD_FRAMES = 6;
 
+/**
+ * Determine which frames to prefetch around the playhead.
+ *
+ * Returns a priority-sorted list of frames within the buffer window.
+ * Frames closer to the target index score higher; frames in the
+ * direction of playback receive a small directional boost.
+ * The list is consumed both by the `FramePrefetcher` (to decide which
+ * frames to prefetch tiles for) and by `TimeCOGLayer.updateFrameState`
+ * (for cache protection).
+ *
+ * @param catalog      Full ordered frame catalog.
+ * @param targetIndex  Index of the current display frame in the catalog.
+ * @param policy       Buffer window sizes (default 2 backward, 6 forward).
+ * @param playbackRate 0 = paused, sign indicates direction.
+ * @param playing      Whether playback is active.
+ */
 export function scheduleFrameWindow(
   catalog: readonly NormalizedTimeCOGFrame[],
   targetIndex: number,

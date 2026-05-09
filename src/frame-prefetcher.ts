@@ -23,6 +23,7 @@ type TileTask = {
   priority: number;
 };
 
+/** The current playback snapshot, passed from `TimeCOGLayer.updateState`. */
 type PrefetchSnapshot = {
   targetFrame: NormalizedTimeCOGFrame;
   scheduledFrames: NormalizedTimeCOGFrame[];
@@ -46,6 +47,36 @@ type PrefetchSnapshot = {
 
 const MAX_GEOTIFF_CACHE = 8;
 
+/**
+ * Background tile-prefetch pipeline.
+ *
+ * ## Role
+ *
+ * The prefetcher runs after every `TimeCOGLayer.updateState`.  It
+ * receives the current visible tile coordinates, the frame schedule
+ * window, and the playback direction.  For each scheduled frame
+ * (excluding the target, which is already being loaded by the
+ * sublayer), it creates a `(frameId, x, y, z, quality)` task and
+ * scores it by temporal distance and playback direction.
+ *
+ * Tasks are executed concurrently up to `maxConcurrent` (default 4).
+ * Each task lazily opens the COG for the target frame, selects the
+ * appropriate overview level, calls the user's `getTileData` function
+ * (which creates GPU textures), and stores the result in the shared
+ * `SequenceTileCache`.
+ *
+ * When the user seeks or the schedule window shifts, stale in-flight
+ * tasks are aborted via `AbortController`.
+ *
+ * ## Scoring (simplified from the research prototype)
+ *
+ * ```text
+ * priority = 100 - (absDistance * 20) + directionalBoost
+ * ```
+ *
+ * Frames within ±2 steps of the playhead are fetched at `"full"`
+ * quality; farther frames are fetched at `"preview"` quality.
+ */
 export class FramePrefetcher {
   private tileCache: SequenceTileCache;
   private queue: TileTask[] = [];
@@ -128,6 +159,10 @@ export class FramePrefetcher {
     this.pump();
   }
 
+  /**
+   * Abort all in-flight tasks and cancel everything in the queue.
+   * Called on seek / scrub and layer teardown.
+   */
   abortAll(): void {
     for (const entry of this.inFlight.values()) {
       entry.controller.abort();
