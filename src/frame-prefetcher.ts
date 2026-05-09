@@ -7,7 +7,7 @@ import type {
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { openGeoTIFF } from "./geotiff-source.js";
 import type { SequenceTileCache, TileQuality } from "./sequence-tile-cache.js";
-import { hasTile, imageForZ, isMissingTileError, mapToCoarserZoom } from "./tile-utils.js";
+import { hasTile, imageForZ, isMissingTileError } from "./tile-utils.js";
 import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy } from "./types.js";
 
 type TileCoord = { x: number; y: number; z: number };
@@ -21,6 +21,7 @@ type TileTask = {
   z: number;
   quality: TileQuality;
   priority: number;
+  bias: number;
 };
 
 /** The current playback snapshot, passed from `TimeCOGLayer.updateState`. */
@@ -152,52 +153,28 @@ export class FramePrefetcher {
       );
 
       for (const tile of snapshot.visibleTiles) {
-        if (bias > 0) {
-          const preview = mapToCoarserZoom(tile.x, tile.y, tile.z, bias);
-          const key = taskKey(frame.id, preview.x, preview.y, preview.z);
+        const key = taskKey(frame.id, tile.x, tile.y, tile.z);
 
-          if (this.tileCache.get(frame.id, preview.x, preview.y, preview.z)) {
-            continue;
-          }
-
-          if (this.inFlight.has(key) || this.queuedKeys.has(key)) {
-            continue;
-          }
-
-          newTasks.push({
-            frameId: frame.id,
-            frameUrl: frame.url,
-            requestInit: frame.requestInit,
-            x: preview.x,
-            y: preview.y,
-            z: preview.z,
-            quality,
-            priority: this.score(distanceIndex, snapshot.playing, snapshot.playbackRate),
-          });
-          this.queuedKeys.add(key);
-        } else {
-          const key = taskKey(frame.id, tile.x, tile.y, tile.z);
-
-          if (this.tileCache.get(frame.id, tile.x, tile.y, tile.z)) {
-            continue;
-          }
-
-          if (this.inFlight.has(key) || this.queuedKeys.has(key)) {
-            continue;
-          }
-
-          newTasks.push({
-            frameId: frame.id,
-            frameUrl: frame.url,
-            requestInit: frame.requestInit,
-            x: tile.x,
-            y: tile.y,
-            z: tile.z,
-            quality,
-            priority: this.score(distanceIndex, snapshot.playing, snapshot.playbackRate),
-          });
-          this.queuedKeys.add(key);
+        if (this.tileCache.get(frame.id, tile.x, tile.y, tile.z)) {
+          continue;
         }
+
+        if (this.inFlight.has(key) || this.queuedKeys.has(key)) {
+          continue;
+        }
+
+        newTasks.push({
+          frameId: frame.id,
+          frameUrl: frame.url,
+          requestInit: frame.requestInit,
+          x: tile.x,
+          y: tile.y,
+          z: tile.z,
+          quality,
+          bias,
+          priority: this.score(distanceIndex, snapshot.playing, snapshot.playbackRate),
+        });
+        this.queuedKeys.add(key);
       }
     }
 
@@ -205,8 +182,9 @@ export class FramePrefetcher {
       for (const frame of snapshot.scheduledFrames) {
         for (const tile of snapshot.visibleTiles) {
           const exactKey = taskKey(frame.id, tile.x, tile.y, tile.z);
+          const existing = this.tileCache.get(frame.id, tile.x, tile.y, tile.z);
 
-          if (this.tileCache.get(frame.id, tile.x, tile.y, tile.z)) {
+          if (existing && existing.quality === "full") {
             continue;
           }
 
@@ -214,9 +192,7 @@ export class FramePrefetcher {
             continue;
           }
 
-          const best = this.tileCache.getBest(frame.id, tile.x, tile.y, tile.z, 2);
-
-          if (best && best.quality !== "full") {
+          if (existing && existing.quality !== "full") {
             newTasks.push({
               frameId: frame.id,
               frameUrl: frame.url,
@@ -225,6 +201,7 @@ export class FramePrefetcher {
               y: tile.y,
               z: tile.z,
               quality: "full",
+              bias: 0,
               priority: 1000,
             });
             this.queuedKeys.add(exactKey);
@@ -297,7 +274,11 @@ export class FramePrefetcher {
         this.geotiffs.set(task.frameId, geotiff);
       }
 
-      const image = imageForZ(geotiff, task.z);
+      let image = imageForZ(geotiff, task.z - task.bias);
+
+      if (!image || !hasTile(image, task.x, task.y)) {
+        image = imageForZ(geotiff, task.z);
+      }
 
       if (!image || !hasTile(image, task.x, task.y)) {
         return;

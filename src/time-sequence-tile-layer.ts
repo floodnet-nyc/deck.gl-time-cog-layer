@@ -16,7 +16,7 @@ import type { GeoTIFF, Overview, DecoderPool } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { openGeoTIFF } from "./geotiff-source.js";
 import type { TileQuality, SequenceTileCache } from "./sequence-tile-cache.js";
-import { hasTile, imageForZ, isMissingTileError, mapToCoarserZoom } from "./tile-utils.js";
+import { hasTile, imageForZ, isMissingTileError } from "./tile-utils.js";
 
 type TileCoord = { x: number; y: number; z: number };
 
@@ -78,16 +78,19 @@ const TIME_SEQ_TILE_LAYER_NAME = "TimeSequenceTileLayer";
  * Wraps the user-supplied (or inferred-default) `getTileData` in a
  * cache-aware fetcher with progressive-loading support:
  *
- * 1. Check the shared `SequenceTileCache` for the exact tile.
- * 2. On miss, search progressively coarser zoom levels via
- *    `SequenceTileCache.getBest()`.
- * 3. If still no hit and `previewBias > 0`, fetch at a coarser zoom
- *    and store as a `"preview"` tile.  Otherwise fetch at the exact
- *    zoom and store as `"full"`.
+ * 1. Check the shared `SequenceTileCache` for the tile at `(x, y, z)`.
+ * 2. On miss, select a coarser COG overview level via
+ *    `imageForZ(geotiff, z - bias)` (keeping the same `(x, y)`
+ *    coordinates — the tileset descriptor already mapped viewport
+ *    space to COG tile coords).  Fall back to `imageForZ(geotiff, z)`
+ *    if the biased overview has no tile at those coordinates.
+ * 3. Store the result under the original key `(frameId, x, y, z)`
+ *    with quality `"preview"` or `"full"`.
  *
- * Cached hits return GPU textures synchronously, enabling flicker-free
- * frame switches.  Preview-hit returns show a coarser version
- * immediately, eliminating the empty-tile flash during seek / scrub.
+ * The COG overview at `z - bias` covers the same spatial area as `z`
+ * but at lower pixel resolution — the deck.gl TileLayer renders it in
+ * the correct tile extent automatically, producing a blurry preview
+ * that is later upgraded to full resolution.
  *
  * ### `_renderTileCallback()`
  * Simple pass-through to the user's `renderTile` or the inferred
@@ -257,40 +260,20 @@ export class TimeSequenceTileLayer<
       const { currentFrameId, currentFrameUrl, currentFrameRequestInit, previewBias } = seqProps;
       const { x, y, z } = tile.index;
 
-      const exactHit = tileCache.get(currentFrameId, x, y, z);
+      const hit = tileCache.get(currentFrameId, x, y, z);
 
-      if (exactHit) {
+      if (hit) {
         return {
-          texture: exactHit.texture,
-          mask: exactHit.mask,
-          byteLength: exactHit.byteLength,
-          width: exactHit.width,
-          height: exactHit.height,
+          texture: hit.texture,
+          mask: hit.mask,
+          byteLength: hit.byteLength,
+          width: hit.width,
+          height: hit.height,
         } as unknown as DataT;
       }
 
-      const bestHit = tileCache.getBest(currentFrameId, x, y, z, 2);
-
-      if (bestHit) {
-        return {
-          texture: bestHit.texture,
-          mask: bestHit.mask,
-          byteLength: bestHit.byteLength,
-          width: bestHit.width,
-          height: bestHit.height,
-        } as unknown as DataT;
-      }
-
-      const bias = 0;//previewBias ?? 0;
-      let targetX = x;
-      let targetY = y;
-      let targetZ = z;
-      let quality: TileQuality = "full";
-
-      if (bias > 0) {
-        ({ x: targetX, y: targetY, z: targetZ } = mapToCoarserZoom(x, y, z, bias));
-        quality = "preview";
-      }
+      const bias = previewBias ?? 0;
+      let quality: TileQuality = bias > 0 ? "preview" : "full";
 
       const geotiffByUrl =
         this.state.geotiffByUrl ?? new Map<string, GeoTIFF>();
@@ -313,16 +296,21 @@ export class TimeSequenceTileLayer<
         this.setState({ geotiffByUrl });
       }
 
-      const image = imageForZ(geotiff, targetZ);
+      let image = imageForZ(geotiff, z - bias);
 
-      if (!image || !hasTile(image, targetX, targetY)) {
+      if (!image || !hasTile(image, x, y)) {
+        image = imageForZ(geotiff, z);
+        quality = "full";
+      }
+
+      if (!image || !hasTile(image, x, y)) {
         return null as DataT;
       }
 
       const getTileDataOptions: GetTileDataOptions = {
         device: options.device,
-        x: targetX,
-        y: targetY,
+        x,
+        y,
         signal: options.signal,
         pool:
           (
@@ -356,10 +344,10 @@ export class TimeSequenceTileLayer<
           height: number;
         };
 
-        tileCache.put(currentFrameId, targetX, targetY, targetZ, {
-          x: targetX,
-          y: targetY,
-          z: targetZ,
+        tileCache.put(currentFrameId, x, y, z, {
+          x,
+          y,
+          z,
           texture: r.texture,
           mask: r.mask,
           byteLength: r.byteLength ?? 0,

@@ -436,9 +436,10 @@ test("frame prefetcher creates preview tasks at biased zoom during seeking", () 
 
   assert.equal(prefetcher.queue.length, 1);
   assert.equal(prefetcher.queue[0].quality, "preview");
-  assert.equal(prefetcher.queue[0].x, 2);
-  assert.equal(prefetcher.queue[0].y, 1);
-  assert.equal(prefetcher.queue[0].z, 2);
+  assert.equal(prefetcher.queue[0].x, 4);
+  assert.equal(prefetcher.queue[0].y, 2);
+  assert.equal(prefetcher.queue[0].z, 3);
+  assert.equal(prefetcher.queue[0].bias, 1);
 });
 
 test("frame prefetcher creates preview tasks at coarser bias during scrubbing", () => {
@@ -477,9 +478,10 @@ test("frame prefetcher creates preview tasks at coarser bias during scrubbing", 
 
   assert.equal(prefetcher.queue.length, 1);
   assert.equal(prefetcher.queue[0].quality, "preview");
-  assert.equal(prefetcher.queue[0].x, 2);
-  assert.equal(prefetcher.queue[0].y, 1);
-  assert.equal(prefetcher.queue[0].z, 2);
+  assert.equal(prefetcher.queue[0].x, 8);
+  assert.equal(prefetcher.queue[0].y, 4);
+  assert.equal(prefetcher.queue[0].z, 4);
+  assert.equal(prefetcher.queue[0].bias, 2);
 });
 
 test("frame prefetcher creates preview tasks at biased zoom during playing for nearby frames", () => {
@@ -518,9 +520,10 @@ test("frame prefetcher creates preview tasks at biased zoom during playing for n
 
   assert.equal(prefetcher.queue.length, 1);
   assert.equal(prefetcher.queue[0].quality, "preview");
-  assert.equal(prefetcher.queue[0].x, 2);
-  assert.equal(prefetcher.queue[0].y, 1);
-  assert.equal(prefetcher.queue[0].z, 2);
+  assert.equal(prefetcher.queue[0].x, 4);
+  assert.equal(prefetcher.queue[0].y, 2);
+  assert.equal(prefetcher.queue[0].z, 3);
+  assert.equal(prefetcher.queue[0].bias, 1);
 });
 
 test("frame prefetcher in idle mode creates upgrade tasks for preview-only tiles", () => {
@@ -544,15 +547,15 @@ test("frame prefetcher in idle mode creates upgrade tasks for preview-only tiles
     sourceIndex: 1,
   };
 
-  cache.put("next", 2, 1, 2, {
+  cache.put("next", 4, 2, 3, {
     texture: { destroy() {} },
     byteLength: 1,
     width: 1,
     height: 1,
     quality: "preview",
-    x: 2,
-    y: 1,
-    z: 2,
+    x: 4,
+    y: 2,
+    z: 3,
   });
 
   prefetcher.update({
@@ -574,6 +577,7 @@ test("frame prefetcher in idle mode creates upgrade tasks for preview-only tiles
   assert.equal(prefetcher.queue[0].y, 2);
   assert.equal(prefetcher.queue[0].z, 3);
   assert.equal(prefetcher.queue[0].priority, 1000);
+  assert.equal(prefetcher.queue[0].bias, 0);
 });
 
 test("frame prefetcher in idle mode skips upgrade when full tile already cached", () => {
@@ -608,17 +612,6 @@ test("frame prefetcher in idle mode skips upgrade when full tile already cached"
     z: 3,
   });
 
-  cache.put("next", 2, 1, 2, {
-    texture: { destroy() {} },
-    byteLength: 1,
-    width: 1,
-    height: 1,
-    quality: "preview",
-    x: 2,
-    y: 1,
-    z: 2,
-  });
-
   prefetcher.update({
     targetFrame,
     scheduledFrames: [targetFrame, nextFrame],
@@ -632,7 +625,8 @@ test("frame prefetcher in idle mode skips upgrade when full tile already cached"
     qualityPolicy: {},
   });
 
-  assert.equal(prefetcher.queue.length, 0);
+  const upgradeTasks = prefetcher.queue.filter((t) => t.quality === "full" && t.priority === 1000);
+  assert.equal(upgradeTasks.length, 0);
 });
 
 test("frame prefetcher respects lowResFirst: false in qualityPolicy", () => {
@@ -674,6 +668,7 @@ test("frame prefetcher respects lowResFirst: false in qualityPolicy", () => {
   assert.equal(prefetcher.queue[0].x, 4);
   assert.equal(prefetcher.queue[0].y, 2);
   assert.equal(prefetcher.queue[0].z, 3);
+  assert.equal(prefetcher.queue[0].bias, 0);
 });
 
 test("frame prefetcher skips target frame in all interaction modes", () => {
