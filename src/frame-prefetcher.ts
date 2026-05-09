@@ -8,7 +8,7 @@ import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { openGeoTIFF } from "./geotiff-source.js";
 import type { SequenceTileCache, TileQuality } from "./sequence-tile-cache.js";
 import { hasTile, imageForZ, isMissingTileError } from "./tile-utils.js";
-import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy } from "./types.js";
+import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWeights } from "./types.js";
 
 type TileCoord = { x: number; y: number; z: number };
 
@@ -22,6 +22,8 @@ type TileTask = {
   quality: TileQuality;
   priority: number;
   bias: number;
+  /** User-supplied byte-size estimate from the frame catalog (if any). */
+  byteSizeHint?: number;
 };
 
 /** The current playback snapshot, passed from `TimeCOGLayer.updateState`. */
@@ -48,6 +50,16 @@ type PrefetchSnapshot = {
   qualityPolicy: QualityPolicy;
   /** Fraction of visible tiles cached at full quality for the target frame (0–1). */
   coverage?: number;
+
+  /** Buffer coverage summary computed by the coordinator. */
+  bufferState?: {
+    bufferedAhead: number;
+    bufferedBehind: number;
+    targetAhead: number;
+  };
+
+  /** Optional per-factor scoring weights from SchedulerPolicy. */
+  scoringWeights?: ScoringWeights;
 };
 
 const MAX_GEOTIFF_CACHE = 8;
@@ -113,16 +125,35 @@ export class FramePrefetcher {
   private maxDecodeTasks: number;
   private maxGpuUploads: number;
 
+  /** Per-frame EWMA of tile byteLength, used for ETA-aware size penalty. */
+  private frameAvgBytes = new Map<string, number>();
+
+  /** Immutable scoring weights fallback (populated from constructor/defaults). */
+  private scoringDefaults: Required<ScoringWeights>;
+
+  private static readonly FALLBACK_WEIGHTS: Required<ScoringWeights> = {
+    viewportSalience: 30,
+    direction: 15,
+    bufferShortfall: 20,
+    interaction: 25,
+    qualityUpgrade: 50,
+    qualityFreshPreview: 20,
+    sizeHintPerBit: 2,
+    etaPerMs: 0.02,
+  };
+
   constructor(
     tileCache: SequenceTileCache,
     maxConcurrent = 4,
     maxDecodeTasks?: number,
     maxGpuUploads?: number,
+    scoringWeights?: ScoringWeights,
   ) {
     this.tileCache = tileCache;
     this.maxConcurrent = maxConcurrent;
     this.maxDecodeTasks = maxDecodeTasks ?? maxConcurrent;
     this.maxGpuUploads = maxGpuUploads ?? Math.max(1, Math.floor(maxConcurrent / 2));
+    this.scoringDefaults = { ...FramePrefetcher.FALLBACK_WEIGHTS, ...scoringWeights };
   }
 
   update(snapshot: PrefetchSnapshot): void {
@@ -200,6 +231,7 @@ export class FramePrefetcher {
           frameId: frame.id,
           frameUrl: frame.url,
           requestInit: frame.requestInit,
+          byteSizeHint: frame.byteSizeHint,
           x: tile.x,
           y: tile.y,
           z: tile.z,
@@ -234,6 +266,7 @@ export class FramePrefetcher {
               frameId: frame.id,
               frameUrl: frame.url,
               requestInit: frame.requestInit,
+              byteSizeHint: frame.byteSizeHint,
               x: tile.x,
               y: tile.y,
               z: tile.z,
@@ -392,7 +425,7 @@ export class FramePrefetcher {
         });
 
         if (elapsed > 0 && result.byteLength) {
-          this.recordTelemetry(elapsed, result.byteLength);
+          this.recordTelemetry(elapsed, result.byteLength, task.frameId);
         }
       }
     } catch (err) {
@@ -408,7 +441,7 @@ export class FramePrefetcher {
     }
   }
 
-  private recordTelemetry(sampleMs: number, sampleBytes: number): void {
+  private recordTelemetry(sampleMs: number, sampleBytes: number, frameId?: string): void {
     const alpha = 0.125;
 
     if (this.rttEWMA === 0) {
@@ -424,6 +457,15 @@ export class FramePrefetcher {
     } else {
       this.throughputEWMA = alpha * throughput + (1 - alpha) * this.throughputEWMA;
     }
+
+    if (frameId && sampleBytes > 0) {
+      const prev = this.frameAvgBytes.get(frameId);
+
+      this.frameAvgBytes.set(
+        frameId,
+        prev ? alpha * sampleBytes + (1 - alpha) * prev : sampleBytes,
+      );
+    }
   }
 
   private score(
@@ -431,38 +473,180 @@ export class FramePrefetcher {
     distanceIndex: number,
     snapshot: PrefetchSnapshot,
   ): number {
+    const weights = { ...this.scoringDefaults, ...snapshot.scoringWeights };
     const absDistance = Math.abs(distanceIndex);
 
-    let score = 100 - absDistance * 20;
+    const v = this.viewportSalienceScore(absDistance, weights);
+    const d = this.directionScore(distanceIndex, snapshot, weights);
+    const b = this.bufferShortfallScore(distanceIndex, snapshot, weights);
+    const i = this.interactionScore(absDistance, snapshot, weights);
+    const q = this.qualityUrgencyScore(task, snapshot, weights);
+    const s = this.sizeHintPenalty(task, weights);
+    const e = this.etaPenalty(weights);
 
-    if (
-      snapshot.interactionMode === "seeking" ||
-      snapshot.interactionMode === "scrubbing"
-    ) {
-      score += absDistance <= 1 ? 20 : -15;
-    } else if (
-      snapshot.interactionMode === "idle" &&
-      task.quality === "preview"
-    ) {
-      score += 5;
-    }
+    return Math.max(0, Math.min(200, v + d + b + i + q + s + e));
+  }
 
-    if (snapshot.playing) {
-      const direction = Math.sign(snapshot.playbackRate) || 1;
-      const isForward = Math.sign(distanceIndex) === direction;
+  /**
+   * Viewport-salience score (V).
+   *
+   * All visible tiles in the current viewport share the same spatial
+   * importance, so we use temporal distance as a proxy:
+   *
+   * | distance | level | score |
+   * |----------|-------|-------|
+   * | 0        | 3     | 3 * W |
+   * | 1        | 2     | 2 * W |
+   * | 2        | 1     | 1 * W |
+   * | ≥3       | 0     | 0     |
+   */
+  private viewportSalienceScore(
+    absDistance: number,
+    weights: Required<ScoringWeights>,
+  ): number {
+    if (absDistance === 0) return 3 * weights.viewportSalience;
+    if (absDistance === 1) return 2 * weights.viewportSalience;
+    if (absDistance === 2) return 1 * weights.viewportSalience;
+    return 0;
+  }
 
-      if (isForward) {
-        score += 10;
-      }
-    }
+  /**
+   * Playback-direction alignment (D).
+   *
+   * Forward frames get a bonus during forward playback; backward
+   * frames get a mild penalty.  Paused mode returns 0.
+   */
+  private directionScore(
+    distanceIndex: number,
+    snapshot: PrefetchSnapshot,
+    weights: Required<ScoringWeights>,
+  ): number {
+    if (!snapshot.playing) return 0;
 
+    const direction = Math.sign(snapshot.playbackRate) || 1;
+    const isForward = Math.sign(distanceIndex) === direction;
+
+    return isForward ? weights.direction : -Math.ceil(weights.direction / 2);
+  }
+
+  /**
+   * Buffer-shortfall pressure (B).
+   *
+   * When the contiguous cached buffer ahead of the playhead is below
+   * the target, all forward-frame tasks receive a proportional boost
+   * so the prefetcher closes the gap faster.
+   */
+  private bufferShortfallScore(
+    distanceIndex: number,
+    snapshot: PrefetchSnapshot,
+    weights: Required<ScoringWeights>,
+  ): number {
+    if (distanceIndex <= 0) return 0;
+
+    const buf = snapshot.bufferState;
+    if (!buf || buf.targetAhead <= 0) return 0;
+
+    const shortfall = Math.max(0, 1 - buf.bufferedAhead / buf.targetAhead);
+
+    return shortfall > 0 ? Math.round(weights.bufferShortfall * shortfall) : 0;
+  }
+
+  /**
+   * Interaction override (I).
+   *
+   * During seek / scrub the requested frame's tiles are boosted
+   * heavily while tiles far from the playhead are penalised so they
+   * don't compete for bandwidth.
+   */
+  private interactionScore(
+    absDistance: number,
+    snapshot: PrefetchSnapshot,
+    weights: Required<ScoringWeights>,
+  ): number {
+    const mode = snapshot.interactionMode;
+
+    if (mode === "idle" || mode === "playing") return 0;
+
+    if (absDistance <= 1) return Math.round(2 * weights.interaction);
+    if (absDistance === 2) return Math.round(0.4 * weights.interaction);
+
+    return -Math.round(1.2 * weights.interaction);
+  }
+
+  /**
+   * Quality-urgency score (Q).
+   *
+   * Preview→full upgrades are the highest quality priority because
+   * they are the cheapest path to a better-looking frame.  Fresh
+   * previews get a smaller boost when current-frame coverage is below
+   * 30 %, encouraging at least *something* to appear quickly.
+   */
+  private qualityUrgencyScore(
+    task: TileTask,
+    snapshot: PrefetchSnapshot,
+    weights: Required<ScoringWeights>,
+  ): number {
     if (task.quality === "full") {
       const existing = this.tileCache.get(task.frameId, task.x, task.y, task.z);
 
-      score += existing && existing.quality === "preview" ? 50 : 10;
+      if (existing && existing.quality === "preview") {
+        return weights.qualityUpgrade;
+      }
+
+      return 0;
     }
 
-    return Math.max(0, score);
+    const coverage = snapshot.coverage ?? 1;
+
+    if (coverage < 0.3 && task.quality === "preview") {
+      return weights.qualityFreshPreview;
+    }
+
+    return 0;
+  }
+
+  /**
+   * Estimated-size penalty (W_s · log₂).
+   *
+   * Larger tiles cost more time and bandwidth.  The penalty grows
+   * sub-linearly via log₂ so very large tiles are not completely
+   * starved.
+   *
+   * Byte estimate sources (in order of preference):
+   * 1. Frame-level `byteSizeHint` (carried on the catalog entry).
+   * 2. Per-frame EWMA of previously-fetched `byteLength` values.
+   * 3. No penalty when nothing is known.
+   */
+  private sizeHintPenalty(
+    task: TileTask,
+    weights: Required<ScoringWeights>,
+  ): number {
+    if (weights.sizeHintPerBit <= 0) return 0;
+
+    const estimatedBytes = task.byteSizeHint ?? this.frameAvgBytes.get(task.frameId) ?? 0;
+
+    if (estimatedBytes <= 0) return 0;
+
+    const penalty = Math.round(
+      weights.sizeHintPerBit * Math.log2(estimatedBytes + 1),
+    );
+
+    return -Math.min(15, penalty);
+  }
+
+  /**
+   * ETA penalty (W_e · rttEWMA).
+   *
+   * Tasks whose tiles are expected to take longer to fetch (based on
+   * the EWMA round-trip-time telemetry) are deprioritised relative to
+   * faster tasks.  Returns 0 when no telemetry has been collected yet.
+   */
+  private etaPenalty(weights: Required<ScoringWeights>): number {
+    if (this.rttEWMA <= 0 || weights.etaPerMs <= 0) return 0;
+
+    const penalty = Math.round(weights.etaPerMs * this.rttEWMA);
+
+    return -Math.min(20, penalty);
   }
 
   private qualityForFrame(

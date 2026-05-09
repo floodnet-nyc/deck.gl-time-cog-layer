@@ -173,6 +173,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
         props.schedulerPolicy?.maxNetworkRequests ?? 4,
         props.schedulerPolicy?.maxDecodeTasks,
         props.schedulerPolicy?.maxGpuUploadsPerFrame,
+        props.schedulerPolicy?.scoringWeights,
       ),
       visibleTileRef: { tiles: [] },
       initialGeotiffUrl: "",
@@ -522,6 +523,60 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     return cached / tiles.length;
   }
 
+  /**
+   * Compute how many contiguous frames ahead of and behind the
+   * playhead have at least one cached tile.
+   *
+   * Used by the prefetcher's buffer-shortfall scoring to boost
+   * forward-frame tasks when the ahead-of-playhead buffer is
+   * underfilled.
+   */
+  private computeBufferState(
+    displayFrame: NormalizedTimeCOGFrame | null,
+    scheduledFrames: NormalizedTimeCOGFrame[],
+  ): { bufferedAhead: number; bufferedBehind: number; targetAhead: number } {
+    const cachedFrameIds = this.state
+      ? (this.state as TimeCOGLayerState).tileCache.stats().frameIds
+      : [];
+
+    const cachedSet = new Set(cachedFrameIds);
+
+    const targetIndex = displayFrame
+      ? scheduledFrames.findIndex((f) => f.id === displayFrame.id)
+      : -1;
+
+    let bufferedAhead = 0;
+    let bufferedBehind = 0;
+
+    if (targetIndex >= 0) {
+      for (let i = targetIndex + 1; i < scheduledFrames.length; i += 1) {
+        const f = scheduledFrames[i];
+
+        if (f && cachedSet.has(f.id)) {
+          bufferedAhead += 1;
+        } else {
+          break;
+        }
+      }
+
+      for (let i = targetIndex - 1; i >= 0; i -= 1) {
+        const f = scheduledFrames[i];
+
+        if (f && cachedSet.has(f.id)) {
+          bufferedBehind += 1;
+        } else {
+          break;
+        }
+      }
+    }
+
+    return {
+      bufferedAhead,
+      bufferedBehind,
+      targetAhead: this.props.bufferPolicy?.forwardFrames ?? 6,
+    };
+  }
+
   private emitState(s: TimeCOGLayerState): void {
     const tileStats = s.tileCache.stats();
     const prefetchStats = s.prefetcher.stats();
@@ -576,12 +631,19 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
     const coverage = this.computeCoverage(displayFrame);
 
+    const bufferState = this.computeBufferState(
+      displayFrame,
+      scheduledFrames,
+    );
+
     state.prefetcher.update({
       targetFrame: displayFrame,
       scheduledFrames,
       visibleTiles: state.visibleTileRef.tiles,
       device: this.context.device,
       coverage,
+      bufferState,
+      scoringWeights: this.props.schedulerPolicy?.scoringWeights,
       getUserTileData: this.props.getTileData as (
         image: GeoTIFF | Overview,
         options: {

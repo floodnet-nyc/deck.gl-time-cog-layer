@@ -22,6 +22,7 @@ export type {
   NormalizedTimeCOGFrame,
   QualityPolicy,
   SchedulerPolicy,
+  ScoringWeights,
   TimeCOGBufferPolicy,
   TimeCOGBufferState,
   TimeCOGCachePolicy,

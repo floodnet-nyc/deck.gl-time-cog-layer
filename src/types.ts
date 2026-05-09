@@ -30,6 +30,12 @@ export type TimeCOGFrame = {
   requestInit?: RequestInit;
   /** Opaque metadata carried through to callbacks. */
   meta?: Record<string, unknown>;
+  /**
+   * Estimated compressed byte size of this frame's COG.
+   * Used by the prefetcher to penalise large tiles in the priority queue.
+   * When omitted, the prefetcher auto-estimates from previous fetches.
+   */
+  byteSizeHint?: number;
 };
 
 /**
@@ -99,11 +105,41 @@ export type DescriptorManifest = {
   dimensions: { width: number; height: number };
 };
 
+/**
+ * Per-factor weights that control how the prefetcher scores tile tasks.
+ *
+ * All weights are optional.  When omitted the defaults listed below are
+ * used, producing a priority order where current-frame visible tiles
+ * always outrank far-future tiles.
+ *
+ * The final score for a task is capped to `[0, 200]`.
+ */
+export type ScoringWeights = {
+  /** Weight per viewport-salience level (0–3).  Default 30. */
+  viewportSalience?: number;
+  /** Forward-direction bonus magnitude.  Default 15. */
+  direction?: number;
+  /** Maximum buffer-pressure boost when ahead-of-playhead buffer is low.  Default 20. */
+  bufferShortfall?: number;
+  /** Maximum seek/scrub interaction-override magnitude.  Default 25. */
+  interaction?: number;
+  /** Bonus added when a preview tile is upgraded to full resolution.  Default 50. */
+  qualityUpgrade?: number;
+  /** Bonus for a fresh preview when current-frame coverage is below 30 %.  Default 20. */
+  qualityFreshPreview?: number;
+  /** Penalty multiplier for `log₂(estimatedBytes + 1)`.  Default 2. */
+  sizeHintPerBit?: number;
+  /** Penalty per millisecond of estimated tile fetch time (`rttEWMA`).  Default 0.02. */
+  etaPerMs?: number;
+};
+
 /** Concurrency and backpressure knobs for the prefetcher. */
 export type SchedulerPolicy = {
   maxNetworkRequests?: number;
   maxDecodeTasks?: number;
   maxGpuUploadsPerFrame?: number;
+  /** Optional per-factor scoring weights.  When omitted sensible defaults are used. */
+  scoringWeights?: ScoringWeights;
 };
 
 export type TimeCOGCachePolicy = TileCachePolicy & {
