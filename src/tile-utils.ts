@@ -22,10 +22,3 @@ export function hasTile(
 export function isMissingTileError(error: unknown): boolean {
   return error instanceof Error && /^Tile at \(\d+, \d+\) not found$/.test(error.message);
 }
-
-export function sequenceTileId(
-  frameId: string,
-  index: { x: number; y: number; z: number },
-): string {
-  return `${frameId}:${index.x}-${index.y}-${index.z}`;
-}

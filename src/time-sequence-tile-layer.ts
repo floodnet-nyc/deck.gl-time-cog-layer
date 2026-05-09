@@ -16,7 +16,7 @@ import type { GeoTIFF, Overview, DecoderPool } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { openGeoTIFF } from "./geotiff-source.js";
 import type { TileQuality, SequenceTileCache } from "./sequence-tile-cache.js";
-import { hasTile, imageForZ, isMissingTileError, sequenceTileId } from "./tile-utils.js";
+import { hasTile, imageForZ, isMissingTileError } from "./tile-utils.js";
 
 type TileCoord = { x: number; y: number; z: number };
 
@@ -69,17 +69,12 @@ export class TimeSequenceTileLayer<
 
     const seqProps = this.props as TimeSequenceTileLayerProps;
     const { visibleTileRef, currentFrameId, onVisibleTilesChange } = seqProps;
-    const tileIdPrefix = currentFrameId;
 
     class TilesetFactory extends RasterTileset2D {
       constructor(
         opts: ConstructorParameters<typeof RasterTileset2D>[0],
       ) {
         super(opts, resolvedDescriptor);
-      }
-
-      getTileId(index: { x: number; y: number; z: number }): string {
-        return sequenceTileId(tileIdPrefix, index);
       }
     }
 

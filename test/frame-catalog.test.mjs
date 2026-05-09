@@ -13,7 +13,6 @@ import {
   normalizeFrameCatalog,
   resolveFrameForTime,
   scheduleFrameWindow,
-  sequenceTileId,
 } from "../dist/index.js";
 
 const frames = [
@@ -229,17 +228,6 @@ test("missing COG tile errors are classified separately from real failures", () 
   assert.equal(isMissingTileError(new Error("Tile at (-1, 1) not found")), false);
   assert.equal(isMissingTileError(new Error("Network failed")), false);
   assert.equal(isMissingTileError("Tile at (2, 1) not found"), false);
-});
-
-test("sequence tile ids include the frame id to prevent cross-frame placeholders", () => {
-  assert.equal(
-    sequenceTileId("frame:a", { x: 2, y: 1, z: 0 }),
-    "frame:a:2-1-0",
-  );
-  assert.notEqual(
-    sequenceTileId("frame:a", { x: 2, y: 1, z: 0 }),
-    sequenceTileId("frame:b", { x: 2, y: 1, z: 0 }),
-  );
 });
 
 test("frame prefetcher suppresses expected missing COG tile warnings", async () => {
