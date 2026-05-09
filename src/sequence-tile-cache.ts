@@ -38,6 +38,7 @@ function tileKey(
 
 export class SequenceTileCache {
   private tiles = new Map<string, CachedTile>();
+  private retiredTextures = new Set<Texture>();
   private protected = new Set<string>();
   private policy: TileCachePolicy = {};
 
@@ -78,11 +79,7 @@ export class SequenceTileCache {
 
     if (existing) {
       if (tile.quality === "full" && existing.quality === "preview") {
-        existing.texture.destroy();
-
-        if (existing.mask) {
-          existing.mask.destroy();
-        }
+        this.retireTile(existing);
       } else {
         existing.lastAccessMs = Date.now();
         return;
@@ -106,11 +103,7 @@ export class SequenceTileCache {
   purgeFrame(frameId: string): void {
     for (const [key, tile] of this.tiles) {
       if (tile.frameId === frameId) {
-        tile.texture.destroy();
-
-        if (tile.mask) {
-          tile.mask.destroy();
-        }
+        this.retireTile(tile);
 
         this.tiles.delete(key);
       }
@@ -119,14 +112,15 @@ export class SequenceTileCache {
 
   destroy(): void {
     for (const tile of this.tiles.values()) {
-      tile.texture.destroy();
+      this.retireTile(tile);
+    }
 
-      if (tile.mask) {
-        tile.mask.destroy();
-      }
+    for (const texture of this.retiredTextures) {
+      texture.destroy();
     }
 
     this.tiles.clear();
+    this.retiredTextures.clear();
     this.protected.clear();
   }
 
@@ -226,11 +220,7 @@ export class SequenceTileCache {
         const entry = this.tiles.get(oldestKey);
 
         if (entry) {
-          entry.texture.destroy();
-
-          if (entry.mask) {
-            entry.mask.destroy();
-          }
+          this.retireTile(entry);
         }
 
         this.tiles.delete(oldestKey);
@@ -242,11 +232,7 @@ export class SequenceTileCache {
     const tile = this.tiles.get(bestKey);
 
     if (tile) {
-      tile.texture.destroy();
-
-      if (tile.mask) {
-        tile.mask.destroy();
-      }
+      this.retireTile(tile);
     }
 
     this.tiles.delete(bestKey);
@@ -320,5 +306,13 @@ export class SequenceTileCache {
     }
 
     return total;
+  }
+
+  private retireTile(tile: CachedTile): void {
+    this.retiredTextures.add(tile.texture);
+
+    if (tile.mask) {
+      this.retiredTextures.add(tile.mask);
+    }
   }
 }

@@ -7,9 +7,13 @@ import {
   SequenceTileCache,
   canonicalizeUrl,
   findNearestFrameIndex,
+  hasTile,
+  imageForZ,
+  isMissingTileError,
   normalizeFrameCatalog,
   resolveFrameForTime,
   scheduleFrameWindow,
+  sequenceTileId,
 } from "../dist/index.js";
 
 const frames = [
@@ -132,7 +136,7 @@ test("sequence tile cache honors legacy max frame and tile-entry policy names", 
   });
 
   assert.deepEqual(cache.stats().frameIds.sort(), ["frame:1", "frame:2"]);
-  assert.deepEqual(destroyed, ["0a"]);
+  assert.deepEqual(destroyed, []);
 
   cache.put("frame:1", 1, 0, 0, {
     texture: texture("1b"),
@@ -150,6 +154,8 @@ test("sequence tile cache honors legacy max frame and tile-entry policy names", 
   });
 
   assert.equal(cache.stats().tileCount, 3);
+  cache.destroy();
+  assert.deepEqual(destroyed.sort(), ["0a", "1a", "1b", "2a", "2b"]);
 });
 
 test("frame prefetcher deduplicates and prunes queued tasks with colon frame ids", () => {
@@ -200,4 +206,88 @@ test("frame prefetcher deduplicates and prunes queued tasks with colon frame ids
 
   assert.equal(prefetcher.queue.length, 0);
   assert.equal(prefetcher.queuedKeys.size, 0);
+});
+
+test("tile helpers select overview levels and reject out-of-range tile coordinates", () => {
+  const overview = { tileCount: { x: 2, y: 1 } };
+  const geotiff = {
+    overviews: [overview],
+    tileCount: { x: 4, y: 3 },
+  };
+
+  assert.equal(imageForZ(geotiff, 0), overview);
+  assert.equal(imageForZ(geotiff, 1), geotiff);
+  assert.equal(imageForZ(geotiff, 2), undefined);
+  assert.equal(hasTile(overview, 1, 0), true);
+  assert.equal(hasTile(overview, 2, 0), false);
+  assert.equal(hasTile(overview, 1, 1), false);
+  assert.equal(hasTile(overview, -1, 0), false);
+});
+
+test("missing COG tile errors are classified separately from real failures", () => {
+  assert.equal(isMissingTileError(new Error("Tile at (2, 1) not found")), true);
+  assert.equal(isMissingTileError(new Error("Tile at (-1, 1) not found")), false);
+  assert.equal(isMissingTileError(new Error("Network failed")), false);
+  assert.equal(isMissingTileError("Tile at (2, 1) not found"), false);
+});
+
+test("sequence tile ids include the frame id to prevent cross-frame placeholders", () => {
+  assert.equal(
+    sequenceTileId("frame:a", { x: 2, y: 1, z: 0 }),
+    "frame:a:2-1-0",
+  );
+  assert.notEqual(
+    sequenceTileId("frame:a", { x: 2, y: 1, z: 0 }),
+    sequenceTileId("frame:b", { x: 2, y: 1, z: 0 }),
+  );
+});
+
+test("frame prefetcher suppresses expected missing COG tile warnings", async () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 1);
+  const targetFrame = {
+    id: "target",
+    time: 0,
+    timeMs: 0,
+    url: "https://example.test/target.tif",
+    cacheKey: "target",
+    sourceIndex: 0,
+  };
+  const nextFrame = {
+    id: "next",
+    time: 1,
+    timeMs: 1,
+    url: "https://example.test/next.tif",
+    cacheKey: "next",
+    sourceIndex: 1,
+  };
+  const warnings = [];
+  const originalWarn = console.warn;
+
+  prefetcher.geotiffs.set(nextFrame.id, {
+    overviews: [],
+    tileCount: { x: 3, y: 2 },
+  });
+  console.warn = (...args) => warnings.push(args);
+
+  try {
+    prefetcher.update({
+      targetFrame,
+      scheduledFrames: [targetFrame, nextFrame],
+      visibleTiles: [{ x: 2, y: 1, z: 0 }],
+      device: {},
+      getUserTileData: async () => {
+        throw new Error("Tile at (2, 1) not found");
+      },
+      pool: {},
+      playing: true,
+      playbackRate: 1,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(warnings, []);
 });

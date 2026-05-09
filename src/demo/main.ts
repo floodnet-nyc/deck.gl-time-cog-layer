@@ -14,8 +14,8 @@ import "../demo/style.css";
 
 const DISPLAY_OPACITY = 0.86;
 const PRECIP_MAX_RAW_VALUE = 200;
-const PLAY_SPEEDS = [0.5, 1, 2, 5, 10, 30].map((s) => s * 60);
-const DEFAULT_SPEED = 60;
+const PLAY_SPEEDS = [0.5, 1, 2, 5, 10, 30, 60, 120].map((s) => s * 60);
+const DEFAULT_SPEED = 30 * 60;
 
 
 type PrecipTileData = MinimalTileData & {
@@ -337,7 +337,7 @@ function startPlayback(): void {
         const nearestIndex = findNearestFrameIndex(newTimeMs);
         selectedFrame = catalog[nearestIndex];
         if (nearestIndex !== lastFrameIndex) {
-          console.log(`Advancing to frame ${nearestIndex} at time ${new Date(selectedFrame.timeMs).toISOString()}`);
+          // console.log(`Advancing to frame ${nearestIndex} at time ${new Date(selectedFrame.timeMs).toISOString()}`);
           updateSliderFromTime(newTimeMs);
           render();
           lastFrameTime = now;

@@ -7,6 +7,7 @@ import type {
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { openGeoTIFF } from "./geotiff-source.js";
 import type { SequenceTileCache, TileQuality } from "./sequence-tile-cache.js";
+import { hasTile, imageForZ, isMissingTileError } from "./tile-utils.js";
 import type { NormalizedTimeCOGFrame } from "./types.js";
 
 type TileCoord = { x: number; y: number; z: number };
@@ -182,12 +183,9 @@ export class FramePrefetcher {
         this.geotiffs.set(task.frameId, geotiff);
       }
 
-      const image =
-        task.z === geotiff.overviews.length
-          ? geotiff
-          : geotiff.overviews[geotiff.overviews.length - 1 - task.z];
+      const image = imageForZ(geotiff, task.z);
 
-      if (!image) {
+      if (!image || !hasTile(image, task.x, task.y)) {
         return;
       }
 
@@ -222,7 +220,7 @@ export class FramePrefetcher {
         });
       }
     } catch (err) {
-      if ((err as Error)?.name !== "AbortError") {
+      if ((err as Error)?.name !== "AbortError" && !isMissingTileError(err)) {
         console.warn("FramePrefetcher: tile fetch failed", err);
       }
     } finally {

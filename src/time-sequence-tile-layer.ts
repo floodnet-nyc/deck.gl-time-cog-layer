@@ -16,6 +16,7 @@ import type { GeoTIFF, Overview, DecoderPool } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { openGeoTIFF } from "./geotiff-source.js";
 import type { TileQuality, SequenceTileCache } from "./sequence-tile-cache.js";
+import { hasTile, imageForZ, isMissingTileError, sequenceTileId } from "./tile-utils.js";
 
 type TileCoord = { x: number; y: number; z: number };
 
@@ -68,12 +69,17 @@ export class TimeSequenceTileLayer<
 
     const seqProps = this.props as TimeSequenceTileLayerProps;
     const { visibleTileRef, currentFrameId, onVisibleTilesChange } = seqProps;
+    const tileIdPrefix = currentFrameId;
 
     class TilesetFactory extends RasterTileset2D {
       constructor(
         opts: ConstructorParameters<typeof RasterTileset2D>[0],
       ) {
         super(opts, resolvedDescriptor);
+      }
+
+      getTileId(index: { x: number; y: number; z: number }): string {
+        return sequenceTileId(tileIdPrefix, index);
       }
     }
 
@@ -149,8 +155,11 @@ export class TimeSequenceTileLayer<
       maxRequests: (this.props as Record<string, unknown>).maxRequests as
         | number
         | undefined,
-      refinementStrategy: (this.props as Record<string, unknown>)
-        .refinementStrategy as never,
+      refinementStrategy:
+        (
+          (this.props as Record<string, unknown>)
+            .refinementStrategy as never
+        ) ?? "no-overlap",
       onViewportLoad: (loadedTiles: Tile2DHeader<Record<string, unknown>>[]) => {
         if (visibleTileRef) {
           visibleTileRef.tiles = loadedTiles.map((t) => ({
@@ -222,12 +231,9 @@ export class TimeSequenceTileLayer<
         this.setState({ geotiffByUrl });
       }
 
-      const image: GeoTIFF | Overview | undefined =
-        z === geotiff.overviews.length
-          ? geotiff
-          : geotiff.overviews[geotiff.overviews.length - 1 - z];
+      const image = imageForZ(geotiff, z);
 
-      if (!image) {
+      if (!image || !hasTile(image, x, y)) {
         return null as DataT;
       }
 
@@ -242,12 +248,22 @@ export class TimeSequenceTileLayer<
           ).pool ?? defaultDecoderPool(),
       };
 
-      const result = await (
-        userFn as (
-          img: GeoTIFF | Overview,
-          opts: GetTileDataOptions,
-        ) => Promise<DataT>
-      )(image, getTileDataOptions);
+      let result: DataT;
+
+      try {
+        result = await (
+          userFn as (
+            img: GeoTIFF | Overview,
+            opts: GetTileDataOptions,
+          ) => Promise<DataT>
+        )(image, getTileDataOptions);
+      } catch (error) {
+        if (isMissingTileError(error)) {
+          return null as DataT;
+        }
+
+        throw error;
+      }
 
       if (result && typeof result === "object" && "texture" in result) {
         const r = result as unknown as {
