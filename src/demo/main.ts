@@ -71,6 +71,32 @@ type PrecipIndex = {
   }>;
 };
 
+function padRowsToAlignment(
+  data: Uint8Array | Uint16Array,
+  width: number,
+  height: number,
+  bytesPerPixel: number,
+): { data: Uint8Array | Uint16Array; bytesPerRow: number } {
+  const rowBytes = width * bytesPerPixel;
+  const bytesPerRow = Math.ceil(rowBytes / 4) * 4;
+
+  if (bytesPerRow === rowBytes) {
+    return { data, bytesPerRow };
+  }
+
+  const src = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  const dstBytes = new Uint8Array(bytesPerRow * height);
+
+  for (let row = 0; row < height; row += 1) {
+    dstBytes.set(src.subarray(row * rowBytes, (row + 1) * rowBytes), row * bytesPerRow);
+  }
+
+  return {
+    data: data instanceof Uint16Array ? new Uint16Array(dstBytes.buffer) : dstBytes,
+    bytesPerRow,
+  };
+}
+
 async function getPrecipTileData(
   image: GeoTIFF | Overview,
   { device, x, y, signal, pool }: GetTileDataOptions,
@@ -88,9 +114,9 @@ async function getPrecipTileData(
   }
 
   const data = array.data as Uint8Array | Uint16Array;
+  const format = geotiffTexture.inferTextureFormat(1, [16], [1]);
   const texture = device.createTexture({
-    data,
-    format: geotiffTexture.inferTextureFormat(1, [16], [1]),
+    format,
     width,
     height,
     sampler: {
@@ -98,12 +124,13 @@ async function getPrecipTileData(
       magFilter: "linear",
     },
   });
+  const upload = padRowsToAlignment(data, width, height, 2);
+  texture.writeData(upload.data, { bytesPerRow: upload.bytesPerRow });
   let maskTexture: Texture | undefined;
   let byteLength = data.byteLength;
 
   if (mask) {
     maskTexture = device.createTexture({
-      data: mask,
       format: "r8unorm",
       width,
       height,
@@ -112,6 +139,8 @@ async function getPrecipTileData(
         magFilter: "nearest",
       },
     });
+    const maskUpload = padRowsToAlignment(mask, width, height, 1);
+    maskTexture.writeData(maskUpload.data, { bytesPerRow: maskUpload.bytesPerRow });
     byteLength += mask.byteLength;
   }
 
