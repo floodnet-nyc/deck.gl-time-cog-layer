@@ -27,6 +27,9 @@
     "vite": "^8.0.10"
   },
   "dependencies": {
+    "@chunkd/middleware": "^11.3.0",
+    "@chunkd/source": "^11.4.0",
+    "@chunkd/source-http": "^11.4.0",
     "@developmentseed/deck.gl-geotiff": "^0.6.1"
   },
   "peerDependencies": {

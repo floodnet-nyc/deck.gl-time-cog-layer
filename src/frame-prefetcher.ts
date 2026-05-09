@@ -4,7 +4,8 @@ import type {
   Overview,
   DecoderPool,
 } from "@developmentseed/geotiff";
-import { GeoTIFF as GeoTIFFClass, defaultDecoderPool } from "@developmentseed/geotiff";
+import { defaultDecoderPool } from "@developmentseed/geotiff";
+import { openGeoTIFF } from "./geotiff-source.js";
 import type { SequenceTileCache, TileQuality } from "./sequence-tile-cache.js";
 import type { NormalizedTimeCOGFrame } from "./types.js";
 
@@ -13,6 +14,7 @@ type TileCoord = { x: number; y: number; z: number };
 type TileTask = {
   frameId: string;
   frameUrl: string;
+  requestInit?: RequestInit;
   x: number;
   y: number;
   z: number;
@@ -46,7 +48,8 @@ const MAX_GEOTIFF_CACHE = 8;
 export class FramePrefetcher {
   private tileCache: SequenceTileCache;
   private queue: TileTask[] = [];
-  private inFlight = new Map<string, AbortController>();
+  private queuedKeys = new Set<string>();
+  private inFlight = new Map<string, { controller: AbortController; frameId: string }>();
   private geotiffs = new Map<string, GeoTIFF>();
   private maxConcurrent: number;
 
@@ -72,12 +75,13 @@ export class FramePrefetcher {
 
     const scheduledIds = new Set(snapshot.scheduledFrames.map((f) => f.id));
 
-    for (const [key, ctrl] of this.inFlight) {
-      const frameId = key.slice(0, key.indexOf(":"));
-      if (!scheduledIds.has(frameId)) {
-        ctrl.abort();
+    for (const [, entry] of this.inFlight) {
+      if (!scheduledIds.has(entry.frameId)) {
+        entry.controller.abort();
       }
     }
+
+    this.pruneQueue(scheduledIds);
 
     const newTasks: TileTask[] = [];
 
@@ -91,13 +95,13 @@ export class FramePrefetcher {
         snapshot.scheduledFrames.indexOf(snapshot.targetFrame);
 
       for (const tile of snapshot.visibleTiles) {
-        const key = `${frame.id}:${tile.x}:${tile.y}:${tile.z}`;
+        const key = taskKey(frame.id, tile.x, tile.y, tile.z);
 
         if (this.tileCache.get(frame.id, tile.x, tile.y, tile.z)) {
           continue;
         }
 
-        if (this.inFlight.has(key)) {
+        if (this.inFlight.has(key) || this.queuedKeys.has(key)) {
           continue;
         }
 
@@ -107,12 +111,14 @@ export class FramePrefetcher {
         newTasks.push({
           frameId: frame.id,
           frameUrl: frame.url,
+          requestInit: frame.requestInit,
           x: tile.x,
           y: tile.y,
           z: tile.z,
           quality,
           priority: this.score(distanceIndex, snapshot.playing, snapshot.playbackRate),
         });
+        this.queuedKeys.add(key);
       }
     }
 
@@ -122,11 +128,12 @@ export class FramePrefetcher {
   }
 
   abortAll(): void {
-    for (const ctrl of this.inFlight.values()) {
-      ctrl.abort();
+    for (const entry of this.inFlight.values()) {
+      entry.controller.abort();
     }
     this.inFlight.clear();
     this.queue.length = 0;
+    this.queuedKeys.clear();
     this.activeCount = 0;
   }
 
@@ -140,19 +147,25 @@ export class FramePrefetcher {
       const task = this.queue.shift();
 
       if (task) {
+        this.queuedKeys.delete(taskKey(task.frameId, task.x, task.y, task.z));
         this.executeTask(task);
       }
     }
   }
 
   private async executeTask(task: TileTask): Promise<void> {
-    const key = `${task.frameId}:${task.x}:${task.y}:${task.z}`;
+    const key = taskKey(task.frameId, task.x, task.y, task.z);
+
+    if (this.tileCache.get(task.frameId, task.x, task.y, task.z)) {
+      return;
+    }
+
     const controller = new AbortController();
-    this.inFlight.set(key, controller);
+    this.inFlight.set(key, { controller, frameId: task.frameId });
     this.activeCount += 1;
 
     try {
-      let geotiff = this.geotiffs.get(task.frameUrl);
+      let geotiff = this.geotiffs.get(task.frameId);
 
       if (!geotiff) {
         if (this.geotiffs.size >= MAX_GEOTIFF_CACHE) {
@@ -163,8 +176,10 @@ export class FramePrefetcher {
           }
         }
 
-        geotiff = await GeoTIFFClass.fromUrl(task.frameUrl);
-        this.geotiffs.set(task.frameUrl, geotiff);
+        geotiff = await openGeoTIFF(task.frameUrl, {
+          requestInit: task.requestInit,
+        });
+        this.geotiffs.set(task.frameId, geotiff);
       }
 
       const image =
@@ -233,4 +248,35 @@ export class FramePrefetcher {
 
     return 100 - distancePenalty + directionalBoost;
   }
+
+  private pruneQueue(scheduledIds: Set<string>): void {
+    const nextQueue: TileTask[] = [];
+    const nextKeys = new Set<string>();
+
+    for (const task of this.queue) {
+      if (!scheduledIds.has(task.frameId)) {
+        continue;
+      }
+
+      if (this.tileCache.get(task.frameId, task.x, task.y, task.z)) {
+        continue;
+      }
+
+      const key = taskKey(task.frameId, task.x, task.y, task.z);
+
+      if (nextKeys.has(key)) {
+        continue;
+      }
+
+      nextQueue.push(task);
+      nextKeys.add(key);
+    }
+
+    this.queue = nextQueue;
+    this.queuedKeys = nextKeys;
+  }
+}
+
+function taskKey(frameId: string, x: number, y: number, z: number): string {
+  return JSON.stringify([frameId, x, y, z]);
 }

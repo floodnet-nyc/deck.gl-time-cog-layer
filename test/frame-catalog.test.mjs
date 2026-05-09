@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   FrameCache,
+  FramePrefetcher,
+  SequenceTileCache,
   canonicalizeUrl,
   findNearestFrameIndex,
   normalizeFrameCatalog,
@@ -95,4 +97,107 @@ test("evicts frame cache entries by count and byte policy", () => {
 
   cache.updatePolicy({ memoryBytes: 4 });
   assert.equal(cache.entries.size, 1);
+});
+
+test("sequence tile cache honors legacy max frame and tile-entry policy names", () => {
+  const destroyed = [];
+  const texture = (id) => ({
+    destroy() {
+      destroyed.push(id);
+    },
+  });
+
+  const cache = new SequenceTileCache({ maxFrames: 2, maxTileEntries: 3 });
+
+  cache.put("frame:0", 0, 0, 0, {
+    texture: texture("0a"),
+    byteLength: 1,
+    width: 1,
+    height: 1,
+    quality: "full",
+  });
+  cache.put("frame:1", 0, 0, 0, {
+    texture: texture("1a"),
+    byteLength: 1,
+    width: 1,
+    height: 1,
+    quality: "full",
+  });
+  cache.put("frame:2", 0, 0, 0, {
+    texture: texture("2a"),
+    byteLength: 1,
+    width: 1,
+    height: 1,
+    quality: "full",
+  });
+
+  assert.deepEqual(cache.stats().frameIds.sort(), ["frame:1", "frame:2"]);
+  assert.deepEqual(destroyed, ["0a"]);
+
+  cache.put("frame:1", 1, 0, 0, {
+    texture: texture("1b"),
+    byteLength: 1,
+    width: 1,
+    height: 1,
+    quality: "full",
+  });
+  cache.put("frame:2", 1, 0, 0, {
+    texture: texture("2b"),
+    byteLength: 1,
+    width: 1,
+    height: 1,
+    quality: "full",
+  });
+
+  assert.equal(cache.stats().tileCount, 3);
+});
+
+test("frame prefetcher deduplicates and prunes queued tasks with colon frame ids", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+  const targetFrame = {
+    id: "1761782400000:https://example.test/0.tif",
+    time: 0,
+    timeMs: 0,
+    url: "https://example.test/0.tif",
+    cacheKey: "0",
+    sourceIndex: 0,
+  };
+  const nextFrame = {
+    id: "1761782520000:https://example.test/1.tif",
+    time: 1,
+    timeMs: 1,
+    url: "https://example.test/1.tif",
+    cacheKey: "1",
+    sourceIndex: 1,
+  };
+  const snapshot = {
+    targetFrame,
+    scheduledFrames: [targetFrame, nextFrame],
+    visibleTiles: [{ x: 1, y: 2, z: 3 }],
+    device: {},
+    getUserTileData: async () => ({
+      texture: { destroy() {} },
+      byteLength: 1,
+      width: 1,
+      height: 1,
+    }),
+    pool: {},
+    playing: true,
+    playbackRate: 1,
+  };
+
+  prefetcher.update(snapshot);
+  prefetcher.update(snapshot);
+
+  assert.equal(prefetcher.queue.length, 1);
+  assert.equal(prefetcher.queue[0].frameId, nextFrame.id);
+
+  prefetcher.update({
+    ...snapshot,
+    scheduledFrames: [targetFrame],
+  });
+
+  assert.equal(prefetcher.queue.length, 0);
+  assert.equal(prefetcher.queuedKeys.size, 0);
 });

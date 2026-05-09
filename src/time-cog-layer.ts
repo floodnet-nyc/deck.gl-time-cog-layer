@@ -120,7 +120,9 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       sequenceTileCache: state.tileCache,
       currentFrameId: frame.id,
       currentFrameUrl: frame.url,
+      currentFrameRequestInit: frame.requestInit,
       visibleTileRef: state.visibleTileRef,
+      onVisibleTilesChange: () => this.updatePrefetch(),
     } as object);
   }
 
@@ -189,46 +191,10 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       this.props.onMissingFrame?.(currentTimeMs);
     }
 
-    if (
-      resolution.displayFrame &&
-      this.context.device &&
-      this.props.getTileData
-    ) {
-      const pool =
-        (
-          this.props as unknown as { pool?: DecoderPool }
-        ).pool ?? defaultDecoderPool();
-
-      state.prefetcher.update({
-        targetFrame: resolution.displayFrame,
-        scheduledFrames,
-        visibleTiles: state.visibleTileRef.tiles,
-        device: this.context.device,
-        getUserTileData: this.props.getTileData as (
-          image: GeoTIFF | Overview,
-          options: {
-            device: import("@luma.gl/core").Device;
-            x: number;
-            y: number;
-            signal?: AbortSignal;
-            pool: DecoderPool;
-          },
-        ) => Promise<{
-          texture: import("@luma.gl/core").Texture;
-          mask?: import("@luma.gl/core").Texture;
-          byteLength: number;
-          width: number;
-          height: number;
-        }>,
-        pool,
-        playing: this.props.playing ?? false,
-        playbackRate: this.props.playbackRate ?? 0,
-        signal:
-          (this.props as Record<string, unknown>).signal as
-            | AbortSignal
-            | undefined,
-      });
-    }
+    this.updatePrefetch({
+      displayFrame: resolution.displayFrame,
+      scheduledFrames,
+    });
 
     this.emitState({
       ...state,
@@ -263,6 +229,58 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
     this.props.onBufferStateChange?.(bufferState);
     this.props.onStats?.(stats);
+  }
+
+  private updatePrefetch(snapshot?: {
+    displayFrame: NormalizedTimeCOGFrame | null;
+    scheduledFrames: NormalizedTimeCOGFrame[];
+  }): void {
+    const state = this.state as TimeCOGLayerState;
+    const displayFrame = snapshot?.displayFrame ?? state.displayFrame;
+    const scheduledFrames = snapshot?.scheduledFrames ?? state.scheduledFrames;
+
+    if (
+      !displayFrame ||
+      !this.context.device ||
+      !this.props.getTileData
+    ) {
+      return;
+    }
+
+    const pool =
+      (
+        this.props as unknown as { pool?: DecoderPool }
+      ).pool ?? defaultDecoderPool();
+
+    state.prefetcher.update({
+      targetFrame: displayFrame,
+      scheduledFrames,
+      visibleTiles: state.visibleTileRef.tiles,
+      device: this.context.device,
+      getUserTileData: this.props.getTileData as (
+        image: GeoTIFF | Overview,
+        options: {
+          device: import("@luma.gl/core").Device;
+          x: number;
+          y: number;
+          signal?: AbortSignal;
+          pool: DecoderPool;
+        },
+      ) => Promise<{
+        texture: import("@luma.gl/core").Texture;
+        mask?: import("@luma.gl/core").Texture;
+        byteLength: number;
+        width: number;
+        height: number;
+      }>,
+      pool,
+      playing: this.props.playing ?? false,
+      playbackRate: this.props.playbackRate ?? 0,
+      signal:
+        (this.props as Record<string, unknown>).signal as
+          | AbortSignal
+          | undefined,
+    });
   }
 
   private cogLayerProps(

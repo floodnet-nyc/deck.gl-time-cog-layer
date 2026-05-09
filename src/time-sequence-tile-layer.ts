@@ -13,7 +13,8 @@ import type {
 } from "@developmentseed/deck.gl-geotiff";
 import { COGLayer } from "@developmentseed/deck.gl-geotiff";
 import type { GeoTIFF, Overview, DecoderPool } from "@developmentseed/geotiff";
-import { GeoTIFF as GeoTIFFClass, defaultDecoderPool } from "@developmentseed/geotiff";
+import { defaultDecoderPool } from "@developmentseed/geotiff";
+import { openGeoTIFF } from "./geotiff-source.js";
 import type { TileQuality, SequenceTileCache } from "./sequence-tile-cache.js";
 
 type TileCoord = { x: number; y: number; z: number };
@@ -22,7 +23,9 @@ export type TimeSequenceTileLayerProps = {
   sequenceTileCache: SequenceTileCache;
   currentFrameId: string;
   currentFrameUrl: string;
+  currentFrameRequestInit?: RequestInit;
   visibleTileRef: { tiles: TileCoord[] };
+  onVisibleTilesChange?: () => void;
 };
 
 const TIME_SEQ_TILE_LAYER_NAME = "TimeSequenceTileLayer";
@@ -64,7 +67,7 @@ export class TimeSequenceTileLayer<
     }
 
     const seqProps = this.props as TimeSequenceTileLayerProps;
-    const { visibleTileRef, currentFrameId } = seqProps;
+    const { visibleTileRef, currentFrameId, onVisibleTilesChange } = seqProps;
 
     class TilesetFactory extends RasterTileset2D {
       constructor(
@@ -85,6 +88,10 @@ export class TimeSequenceTileLayer<
       .updateTriggers as Record<string, unknown> | undefined;
     const userSignal = (this.props as Record<string, unknown>)
       .signal as AbortSignal | undefined;
+    const userOnViewportLoad = (this.props as Record<string, unknown>)
+      .onViewportLoad as
+        | ((tiles: Tile2DHeader<Record<string, unknown>>[]) => void)
+        | undefined;
 
     const renderSubLayers = (
       subProps: Record<string, unknown>,
@@ -152,6 +159,9 @@ export class TimeSequenceTileLayer<
             z: t.index.z,
           }));
         }
+
+        onVisibleTilesChange?.();
+        userOnViewportLoad?.(loadedTiles);
       },
     });
   }
@@ -176,7 +186,7 @@ export class TimeSequenceTileLayer<
       options: { device: Device; signal?: AbortSignal },
     ) => {
       const seqProps = this.props as TimeSequenceTileLayerProps;
-      const { currentFrameId, currentFrameUrl } = seqProps;
+      const { currentFrameId, currentFrameUrl, currentFrameRequestInit } = seqProps;
       const { x, y, z } = tile.index;
 
       const cached = tileCache.get(currentFrameId, x, y, z);
@@ -193,10 +203,12 @@ export class TimeSequenceTileLayer<
 
       const geotiffByUrl =
         this.state.geotiffByUrl ?? new Map<string, GeoTIFF>();
-      let geotiff = geotiffByUrl.get(currentFrameUrl);
+      let geotiff = geotiffByUrl.get(currentFrameId);
 
       if (!geotiff) {
-        geotiff = await GeoTIFFClass.fromUrl(currentFrameUrl);
+        geotiff = await openGeoTIFF(currentFrameUrl, {
+          requestInit: currentFrameRequestInit,
+        });
 
         if (geotiffByUrl.size >= 12) {
           const firstKey = geotiffByUrl.keys().next().value;
@@ -206,7 +218,7 @@ export class TimeSequenceTileLayer<
           }
         }
 
-        geotiffByUrl.set(currentFrameUrl, geotiff);
+        geotiffByUrl.set(currentFrameId, geotiff);
         this.setState({ geotiffByUrl });
       }
 

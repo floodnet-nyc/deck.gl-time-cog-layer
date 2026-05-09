@@ -22,6 +22,8 @@ export type TileCacheStats = {
 
 export type TileCachePolicy = {
   memoryBytes?: number;
+  maxFrames?: number;
+  maxTileEntries?: number;
   maxTiles?: number;
 };
 
@@ -146,12 +148,31 @@ export class SequenceTileCache {
   }
 
   private evict(): void {
+    this.evictByFrameCount();
     this.evictByTileCount();
     this.evictByMemory();
   }
 
+  private evictByFrameCount(): void {
+    const maxFrames = this.policy.maxFrames;
+
+    if (!maxFrames || maxFrames < 1) {
+      return;
+    }
+
+    while (this.frameCount() > maxFrames) {
+      const frameId = this.findOldestFrame();
+
+      if (!frameId) {
+        return;
+      }
+
+      this.purgeFrame(frameId);
+    }
+  }
+
   private evictByTileCount(): void {
-    const maxTiles = this.policy.maxTiles;
+    const maxTiles = this.policy.maxTiles ?? this.policy.maxTileEntries;
 
     if (!maxTiles || maxTiles < 1) {
       return;
@@ -243,6 +264,52 @@ export class SequenceTileCache {
     }
 
     return oldestKey;
+  }
+
+  private findOldestFrame(): string | null {
+    const frameAccess = new Map<string, number>();
+
+    for (const tile of this.tiles.values()) {
+      if (this.protected.has(tile.frameId)) {
+        continue;
+      }
+
+      frameAccess.set(
+        tile.frameId,
+        Math.min(frameAccess.get(tile.frameId) ?? Number.POSITIVE_INFINITY, tile.lastAccessMs),
+      );
+    }
+
+    if (frameAccess.size === 0) {
+      for (const tile of this.tiles.values()) {
+        frameAccess.set(
+          tile.frameId,
+          Math.min(frameAccess.get(tile.frameId) ?? Number.POSITIVE_INFINITY, tile.lastAccessMs),
+        );
+      }
+    }
+
+    let oldestFrameId: string | null = null;
+    let oldestAccess = Number.POSITIVE_INFINITY;
+
+    for (const [frameId, access] of frameAccess) {
+      if (access < oldestAccess) {
+        oldestFrameId = frameId;
+        oldestAccess = access;
+      }
+    }
+
+    return oldestFrameId;
+  }
+
+  private frameCount(): number {
+    const frameIds = new Set<string>();
+
+    for (const tile of this.tiles.values()) {
+      frameIds.add(tile.frameId);
+    }
+
+    return frameIds.size;
   }
 
   private totalBytes(): number {
