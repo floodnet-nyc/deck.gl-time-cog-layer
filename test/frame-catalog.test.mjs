@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  FrameCache,
   FramePrefetcher,
   SequenceTileCache,
   canonicalizeUrl,
@@ -82,24 +81,6 @@ test("schedules a playback-aware frame window", () => {
     ),
     [2, 1, 3, 0],
   );
-});
-
-test("evicts frame cache entries by count and byte policy", () => {
-  const catalog = normalizeFrameCatalog([
-    { time: 0, url: "/0.tif" },
-    { time: 1, url: "/1.tif" },
-    { time: 2, url: "/2.tif" },
-  ]);
-  const cache = new FrameCache({ maxFrames: 2, memoryBytes: 10 });
-
-  cache.touch(catalog[0], 4);
-  cache.touch(catalog[1], 4);
-  cache.touch(catalog[2], 4);
-
-  assert.equal(cache.entries.size, 2);
-
-  cache.updatePolicy({ memoryBytes: 4 });
-  assert.equal(cache.entries.size, 1);
 });
 
 test("sequence tile cache honors legacy max frame and tile-entry policy names", () => {

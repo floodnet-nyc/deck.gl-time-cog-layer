@@ -134,15 +134,11 @@ export type TimeCOGLayerProps = COGLayerPassThroughProps & {
    * A value of 60 means 60× real-time (1 minute per second).
    */
   playbackRate?: number;
-  /** Interval between successive frames in milliseconds (default inferred from catalog). */
-  frameIntervalMs?: number;
   missingFramePolicy?: MissingFramePolicy;
   bufferPolicy?: TimeCOGBufferPolicy;
   cachePolicy?: TimeCOGCachePolicy;
   qualityPolicy?: QualityPolicy;
   schedulerPolicy?: SchedulerPolicy;
-  /** Fired once tiles for a frame begin loading. */
-  onFrameReady?: (frame: NormalizedTimeCOGFrame) => void;
   /** Fired when a new frame becomes the display frame. */
   onFrameDisplayed?: (frame: NormalizedTimeCOGFrame) => void;
   /** Fired when the requested time has no exact catalog match. */

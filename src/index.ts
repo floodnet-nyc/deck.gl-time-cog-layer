@@ -6,7 +6,6 @@ export {
   parseTimeValue,
   resolveFrameForTime,
 } from "./frame-catalog.js";
-export { FrameCache } from "./frame-cache.js";
 export { FramePrefetcher } from "./frame-prefetcher.js";
 export { scheduleFrameWindow } from "./frame-scheduler.js";
 export type { CachedTile, TileCachePolicy, TileCacheStats, TileQuality } from "./sequence-tile-cache.js";

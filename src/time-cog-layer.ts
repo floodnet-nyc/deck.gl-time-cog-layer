@@ -419,13 +419,11 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     | "currentTime"
     | "playing"
     | "playbackRate"
-    | "frameIntervalMs"
     | "missingFramePolicy"
     | "bufferPolicy"
     | "cachePolicy"
     | "qualityPolicy"
     | "schedulerPolicy"
-    | "onFrameReady"
     | "onFrameDisplayed"
     | "onMissingFrame"
     | "onBufferStateChange"
@@ -439,13 +437,11 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       currentTime: _currentTime,
       playing: _playing,
       playbackRate: _playbackRate,
-      frameIntervalMs: _frameIntervalMs,
       missingFramePolicy: _missingFramePolicy,
       bufferPolicy: _bufferPolicy,
       cachePolicy: _cachePolicy,
       qualityPolicy: _qualityPolicy,
       schedulerPolicy: _schedulerPolicy,
-      onFrameReady: _onFrameReady,
       onFrameDisplayed: _onFrameDisplayed,
       onMissingFrame: _onMissingFrame,
       onBufferStateChange: _onBufferStateChange,
