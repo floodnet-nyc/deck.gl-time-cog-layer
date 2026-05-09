@@ -9,5 +9,5 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "include": ["src/index.ts", "src/frame-catalog.ts", "src/frame-cache.ts", "src/frame-prefetcher.ts", "src/frame-scheduler.ts", "src/geotiff-source.ts", "src/sequence-tile-cache.ts", "src/tile-diagnostics.ts", "src/tile-utils.ts", "src/time-cog-layer.ts", "src/time-sequence-tile-layer.ts", "src/types.ts"]
+  "include": ["src"]
 }

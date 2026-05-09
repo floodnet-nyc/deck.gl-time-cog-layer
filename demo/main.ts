@@ -8,10 +8,10 @@ import type { RasterModule } from "@developmentseed/deck.gl-raster/gpu-modules";
 import { CreateTexture, MaskTexture } from "@developmentseed/deck.gl-raster/gpu-modules";
 import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
 import type { Texture } from "@luma.gl/core";
-import type { NormalizedTimeCOGFrame, TimeCOGFrame } from "../index.js";
-import { TimeCOGLayer, normalizeFrameCatalog } from "../index.js";
-import { renderTileDiagnostics } from "../tile-diagnostics.js";
-import "../demo/style.css";
+import type { NormalizedTimeCOGFrame, TimeCOGFrame } from "../src/index.js";
+import { TimeCOGLayer, normalizeFrameCatalog } from "../src/index.js";
+import { renderTileDiagnostics } from "../src/tile-diagnostics.js";
+import "./style.css";
 
 const DISPLAY_OPACITY = 0.86;
 const PRECIP_MAX_RAW_VALUE = 200;
