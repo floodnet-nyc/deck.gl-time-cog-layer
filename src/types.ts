@@ -1,4 +1,5 @@
 import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
+import type { TileCachePolicy } from "./sequence-tile-cache.js";
 
 export type TimeValue = string | number | Date;
 
@@ -25,7 +26,20 @@ export type TimeCOGBufferPolicy = {
   forwardFrames?: number;
 };
 
-export type TimeCOGCachePolicy = {
+export type QualityPolicy = {
+  lowResFirst?: boolean;
+  previewOverviewBias?: number;
+  scrubOverviewBias?: number;
+  fullResUpgradeIdleMs?: number;
+};
+
+export type SchedulerPolicy = {
+  maxNetworkRequests?: number;
+  maxDecodeTasks?: number;
+  maxGpuUploadsPerFrame?: number;
+};
+
+export type TimeCOGCachePolicy = TileCachePolicy & {
   maxFrames?: number;
   maxTileEntries?: number;
   memoryBytes?: number;
@@ -69,6 +83,8 @@ export type TimeCOGLayerProps = COGLayerPassThroughProps & {
   missingFramePolicy?: MissingFramePolicy;
   bufferPolicy?: TimeCOGBufferPolicy;
   cachePolicy?: TimeCOGCachePolicy;
+  qualityPolicy?: QualityPolicy;
+  schedulerPolicy?: SchedulerPolicy;
   onFrameReady?: (frame: NormalizedTimeCOGFrame) => void;
   onFrameDisplayed?: (frame: NormalizedTimeCOGFrame) => void;
   onMissingFrame?: (timeMs: number) => void;

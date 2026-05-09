@@ -4,17 +4,20 @@ import type {
   UpdateParameters,
 } from "@deck.gl/core";
 import { CompositeLayer } from "@deck.gl/core";
-import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
-import { COGLayer } from "@developmentseed/deck.gl-geotiff";
-
+import { defaultDecoderPool } from "@developmentseed/geotiff";
+import type { DecoderPool, GeoTIFF, Overview } from "@developmentseed/geotiff";
 import {
   findNearestFrameIndex,
   normalizeFrameCatalog,
   parseTimeValue,
   resolveFrameForTime,
 } from "./frame-catalog.js";
-import { FrameCache } from "./frame-cache.js";
+import { FramePrefetcher } from "./frame-prefetcher.js";
 import { scheduleFrameWindow } from "./frame-scheduler.js";
+import { SequenceTileCache } from "./sequence-tile-cache.js";
+import {
+  TimeSequenceTileLayer,
+} from "./time-sequence-tile-layer.js";
 import type {
   NormalizedTimeCOGFrame,
   TimeCOGBufferState,
@@ -22,9 +25,14 @@ import type {
   TimeCOGStats,
 } from "./types.js";
 
+type TileCoord = { x: number; y: number; z: number };
+
 type TimeCOGLayerState = {
   catalog: NormalizedTimeCOGFrame[];
-  cache: FrameCache;
+  tileCache: SequenceTileCache;
+  prefetcher: FramePrefetcher;
+  visibleTileRef: { tiles: TileCoord[] };
+  initialGeotiffUrl: string;
   currentTimeMs: number;
   targetFrame: NormalizedTimeCOGFrame | null;
   displayFrame: NormalizedTimeCOGFrame | null;
@@ -39,9 +47,18 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   static layerName = "TimeCOGLayer";
 
   initializeState(): void {
+    const props = this.props;
+    const tileCache = new SequenceTileCache(props.cachePolicy);
+
     this.setState({
       catalog: [],
-      cache: new FrameCache(this.props.cachePolicy),
+      tileCache,
+      prefetcher: new FramePrefetcher(
+        tileCache,
+        props.schedulerPolicy?.maxNetworkRequests ?? 4,
+      ),
+      visibleTileRef: { tiles: [] },
+      initialGeotiffUrl: "",
       currentTimeMs: 0,
       targetFrame: null,
       displayFrame: null,
@@ -64,17 +81,20 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       props.missingFramePolicy !== oldProps.missingFramePolicy;
 
     if (cachePolicyChanged) {
-      state.cache.updatePolicy(props.cachePolicy);
+      state.tileCache.updatePolicy(props.cachePolicy ?? {});
     }
 
     if (framesChanged) {
       const catalog = normalizeFrameCatalog(props.frames);
-      state.cache.pruneToCatalog(catalog);
       this.setState({ catalog });
     }
 
     if (framesChanged || timingChanged) {
-      this.updateFrameState(framesChanged ? normalizeFrameCatalog(props.frames) : state.catalog);
+      this.updateFrameState(
+        framesChanged
+          ? normalizeFrameCatalog(props.frames)
+          : state.catalog,
+      );
     }
   }
 
@@ -86,23 +106,40 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       return null;
     }
 
-    const cogProps = this.cogLayerProps(frame);
+    const initialUrl =
+      state.initialGeotiffUrl || frame.url;
 
-    return new COGLayer({
-      ...cogProps,
-      id: `${this.props.id}-cog-${frame.id}`,
-      geotiff: frame.url,
-      onGeoTIFFLoad: (geotiff, options) => {
-        const currentState = this.state as TimeCOGLayerState;
-        currentState.cache.markReady(frame);
-        this.props.onFrameReady?.(frame);
-        this.props.onGeoTIFFLoad?.(geotiff, options);
-        this.emitState(currentState);
-      },
+    const passThrough = this.cogLayerProps(frame);
+
+    return new TimeSequenceTileLayer({
+      ...passThrough,
+      id: `${this.props.id}-tiles`,
+      geotiff: initialUrl,
+      getTileData: this.props.getTileData as (
+        image: GeoTIFF | Overview,
+        options: Record<string, unknown>,
+      ) => Promise<Record<string, unknown>>,
+      renderTile: this.props.renderTile as (
+        data: Record<string, unknown>,
+      ) => Record<string, unknown> | null,
+      sequenceTileCache: state.tileCache,
+      currentFrameId: frame.id,
+      currentFrameUrl: frame.url,
+      prefetcher: state.prefetcher,
+      visibleTileRef: state.visibleTileRef,
     });
   }
 
-  private updateFrameState(catalog: NormalizedTimeCOGFrame[]): void {
+  finalizeState(): void {
+    const state = this.state as TimeCOGLayerState;
+    state.prefetcher?.abortAll();
+    state.tileCache?.destroy();
+  }
+
+  private updateFrameState(
+    catalog: NormalizedTimeCOGFrame[],
+  ): void {
+    const state = this.state as TimeCOGLayerState;
     const currentTimeMs = parseTimeValue(this.props.currentTime);
     const resolution = resolveFrameForTime(
       catalog,
@@ -112,21 +149,19 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     const targetIndex = resolution.targetFrame
       ? findNearestFrameIndex(catalog, resolution.targetFrame.timeMs)
       : -1;
+
     const scheduledFrames = scheduleFrameWindow(
       catalog,
       targetIndex,
       this.props.bufferPolicy,
       this.props.playbackRate,
       this.props.playing,
-    ).map((scheduledFrame) => scheduledFrame.frame);
-    const state = this.state as TimeCOGLayerState;
+    ).map((sf) => sf.frame);
 
-    for (const frame of scheduledFrames) {
-      state.cache.touch(frame);
-    }
-
-    if (resolution.displayFrame) {
-      state.cache.touch(resolution.displayFrame);
+    if (!state.initialGeotiffUrl && resolution.displayFrame) {
+      this.setState({
+        initialGeotiffUrl: resolution.displayFrame.url,
+      });
     }
 
     this.setState({
@@ -138,7 +173,70 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       missing: resolution.missing,
     });
 
-    const nextState = {
+    if (resolution.displayFrame) {
+      const protectedFrames = [
+        resolution.displayFrame.id,
+        ...scheduledFrames.slice(0, 3).map((f) => f.id),
+      ];
+      state.tileCache.protect(protectedFrames);
+    }
+
+    if (
+      resolution.displayFrame &&
+      state.lastDisplayedFrameId !== resolution.displayFrame.id
+    ) {
+      this.props.onFrameDisplayed?.(resolution.displayFrame);
+      this.setState({
+        lastDisplayedFrameId: resolution.displayFrame.id,
+      });
+    }
+
+    if (resolution.missing) {
+      this.props.onMissingFrame?.(currentTimeMs);
+    }
+
+    if (
+      resolution.displayFrame &&
+      this.context.device &&
+      this.props.getTileData
+    ) {
+      const pool =
+        (
+          this.props as unknown as { pool?: DecoderPool }
+        ).pool ?? defaultDecoderPool();
+
+      state.prefetcher.update({
+        targetFrame: resolution.displayFrame,
+        scheduledFrames,
+        visibleTiles: state.visibleTileRef.tiles,
+        device: this.context.device,
+        getUserTileData: this.props.getTileData as (
+          image: GeoTIFF | Overview,
+          options: {
+            device: import("@luma.gl/core").Device;
+            x: number;
+            y: number;
+            signal?: AbortSignal;
+            pool: DecoderPool;
+          },
+        ) => Promise<{
+          texture: import("@luma.gl/core").Texture;
+          mask?: import("@luma.gl/core").Texture;
+          byteLength: number;
+          width: number;
+          height: number;
+        }>,
+        pool,
+        playing: this.props.playing ?? false,
+        playbackRate: this.props.playbackRate ?? 0,
+        signal:
+          (this.props as Record<string, unknown>).signal as
+            | AbortSignal
+            | undefined,
+      });
+    }
+
+    this.emitState({
       ...state,
       catalog,
       currentTimeMs,
@@ -146,44 +244,56 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       displayFrame: resolution.displayFrame,
       scheduledFrames,
       missing: resolution.missing,
-    };
-
-    if (resolution.displayFrame && state.lastDisplayedFrameId !== resolution.displayFrame.id) {
-      this.props.onFrameDisplayed?.(resolution.displayFrame);
-      this.setState({ lastDisplayedFrameId: resolution.displayFrame.id });
-      nextState.lastDisplayedFrameId = resolution.displayFrame.id;
-    }
-
-    if (resolution.missing) {
-      this.props.onMissingFrame?.(currentTimeMs);
-    }
-
-    this.emitState(nextState);
+    });
   }
 
-  private emitState(state: TimeCOGLayerState): void {
+  private emitState(s: TimeCOGLayerState): void {
+    const tileStats = s.tileCache.stats();
+
     const bufferState: TimeCOGBufferState = {
-      targetFrame: state.targetFrame,
-      displayFrame: state.displayFrame,
-      scheduledFrameIds: state.scheduledFrames.map((frame) => frame.id),
-      readyFrameIds: state.cache.readyFrameIds(),
-      missing: state.missing,
+      targetFrame: s.targetFrame,
+      displayFrame: s.displayFrame,
+      scheduledFrameIds: s.scheduledFrames.map((f) => f.id),
+      readyFrameIds: tileStats.frameIds,
+      missing: s.missing,
     };
-    const stats: TimeCOGStats = state.cache.stats(
-      state.catalog.length,
-      state.scheduledFrames.length,
-      state.currentTimeMs,
-      state.targetFrame?.id ?? null,
-      state.displayFrame?.id ?? null,
-    );
+    const stats: TimeCOGStats = {
+      frameCount: s.catalog.length,
+      readyFrameCount: tileStats.frameIds.length,
+      cacheEntryCount: tileStats.tileCount,
+      scheduledFrameCount: s.scheduledFrames.length,
+      currentTimeMs: s.currentTimeMs,
+      targetFrameId: s.targetFrame?.id ?? null,
+      displayFrameId: s.displayFrame?.id ?? null,
+    };
 
     this.props.onBufferStateChange?.(bufferState);
     this.props.onStats?.(stats);
   }
 
-  private cogLayerProps(frame: NormalizedTimeCOGFrame): Omit<
-    COGLayerProps,
-    "id" | "geotiff" | "onGeoTIFFLoad"
+  private cogLayerProps(
+    frame: NormalizedTimeCOGFrame,
+  ): Omit<
+    TimeCOGLayerProps,
+    | "id"
+    | "frames"
+    | "currentTime"
+    | "playing"
+    | "playbackRate"
+    | "frameIntervalMs"
+    | "missingFramePolicy"
+    | "bufferPolicy"
+    | "cachePolicy"
+    | "qualityPolicy"
+    | "schedulerPolicy"
+    | "onFrameReady"
+    | "onFrameDisplayed"
+    | "onMissingFrame"
+    | "onBufferStateChange"
+    | "onStats"
+    | "onGeoTIFFLoad"
+    | "getTileData"
+    | "renderTile"
   > {
     const {
       frames: _frames,
@@ -194,28 +304,38 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       missingFramePolicy: _missingFramePolicy,
       bufferPolicy: _bufferPolicy,
       cachePolicy: _cachePolicy,
+      qualityPolicy: _qualityPolicy,
+      schedulerPolicy: _schedulerPolicy,
       onFrameReady: _onFrameReady,
       onFrameDisplayed: _onFrameDisplayed,
       onMissingFrame: _onMissingFrame,
       onBufferStateChange: _onBufferStateChange,
       onStats: _onStats,
       onGeoTIFFLoad: _onGeoTIFFLoad,
+      getTileData: _getTileData,
+      renderTile: _renderTile,
       ...cogProps
     } = this.props;
 
     if (!frame.requestInit) {
-      return cogProps;
+      return cogProps as ReturnType<typeof this.cogLayerProps>;
     }
 
     return {
       ...cogProps,
       loadOptions: {
-        ...cogProps.loadOptions,
+        ...(
+          cogProps as Record<string, unknown>
+        ).loadOptions as Record<string, unknown>,
         fetch: {
-          ...cogProps.loadOptions?.fetch,
+          ...(
+            (
+              cogProps as Record<string, unknown>
+            ).loadOptions as Record<string, unknown>
+          )?.fetch as Record<string, unknown>,
           ...frame.requestInit,
         },
       },
-    };
+    } as ReturnType<typeof this.cogLayerProps>;
   }
 }
