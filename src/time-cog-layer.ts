@@ -350,4 +350,72 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       },
     } as ReturnType<typeof this.cogLayerProps>;
   }
+
+  getDiagnosticSnapshot(windowSize = 60): {
+    tileCache: SequenceTileCache;
+    visibleTiles: { x: number; y: number; z: number }[];
+    frameIds: string[];
+    allFrameIds: string[];
+    playheadIndex: number;
+    maxZoom: number;
+    tileGrid: Record<number, { maxX: number; maxY: number }>;
+  } {
+    const empty = {
+      tileCache: new SequenceTileCache(),
+      visibleTiles: [] as { x: number; y: number; z: number }[],
+      frameIds: [] as string[],
+      allFrameIds: [] as string[],
+      playheadIndex: 0,
+      maxZoom: 0,
+      tileGrid: {} as Record<number, { maxX: number; maxY: number }>,
+    };
+    const state = this.state as TimeCOGLayerState | undefined;
+
+    if (!state || !state.tileCache || !state.visibleTileRef) {
+      return empty;
+    }
+
+    const tileGrid: Record<number, { maxX: number; maxY: number }> = {};
+
+    for (const [, tile] of state.tileCache.entries()) {
+      if (!tileGrid[tile.z]) {
+        tileGrid[tile.z] = { maxX: tile.x, maxY: tile.y };
+      } else {
+        tileGrid[tile.z]!.maxX = Math.max(tileGrid[tile.z]!.maxX, tile.x);
+        tileGrid[tile.z]!.maxY = Math.max(tileGrid[tile.z]!.maxY, tile.y);
+      }
+    }
+
+    for (const v of state.visibleTileRef.tiles) {
+      if (!tileGrid[v.z]) {
+        tileGrid[v.z] = { maxX: v.x, maxY: v.y };
+      } else {
+        tileGrid[v.z]!.maxX = Math.max(tileGrid[v.z]!.maxX, v.x);
+        tileGrid[v.z]!.maxY = Math.max(tileGrid[v.z]!.maxY, v.y);
+      }
+    }
+
+    const allFrameIds = state.catalog.map((f) => f.id);
+    const displayId = state.displayFrame?.id;
+    const playheadInCatalog = displayId
+      ? allFrameIds.indexOf(displayId)
+      : 0;
+    const halfWindow = Math.floor(windowSize / 2);
+    const winStart = Math.max(0, playheadInCatalog - halfWindow);
+    const winEnd = Math.min(allFrameIds.length, winStart + windowSize);
+    const frameIds = allFrameIds.slice(winStart, winEnd);
+    const playheadIndex = Math.max(0, playheadInCatalog - winStart);
+
+    const maxZoom = Math.max(0, ...Object.keys(tileGrid).map(Number));
+
+    return {
+      tileCache: state.tileCache,
+      visibleTiles: state.visibleTileRef.tiles,
+      frameIds,
+      allFrameIds,
+      playheadIndex,
+      maxZoom,
+      tileGrid,
+    };
+  }
 }

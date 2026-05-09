@@ -211,6 +211,9 @@ export class FramePrefetcher {
 
       if (result && result.texture) {
         this.tileCache.put(task.frameId, task.x, task.y, task.z, {
+          x: task.x,
+          y: task.y,
+          z: task.z,
           texture: result.texture,
           mask: result.mask,
           byteLength: result.byteLength ?? 0,

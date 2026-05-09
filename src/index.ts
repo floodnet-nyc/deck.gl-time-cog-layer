@@ -13,8 +13,8 @@ export type { CachedTile, TileCachePolicy, TileCacheStats, TileQuality } from ".
 export { SequenceTileCache } from "./sequence-tile-cache.js";
 export { hasTile, imageForZ, isMissingTileError } from "./tile-utils.js";
 export { TimeCOGLayer } from "./time-cog-layer.js";
-export type { TimeSequenceTileLayerProps } from "./time-sequence-tile-layer.js";
-export { TimeSequenceTileLayer } from "./time-sequence-tile-layer.js";
+export type { TileDiagSnapshot } from "./tile-diagnostics.js";
+export { renderTileDiagnostics } from "./tile-diagnostics.js";
 export type {
   MissingFramePolicy,
   NormalizedTimeCOGFrame,

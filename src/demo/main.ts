@@ -10,6 +10,7 @@ import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
 import type { Texture } from "@luma.gl/core";
 import type { NormalizedTimeCOGFrame, TimeCOGFrame } from "../index.js";
 import { TimeCOGLayer, normalizeFrameCatalog } from "../index.js";
+import { renderTileDiagnostics } from "../tile-diagnostics.js";
 import "../demo/style.css";
 
 const DISPLAY_OPACITY = 0.86;
@@ -200,6 +201,7 @@ app.innerHTML = `
     </label>
     <output id="time"></output>
     <output id="stats"></output>
+    <canvas id="diagnostics" width="480" height="200"></canvas>
   </aside>
 `;
 
@@ -208,6 +210,7 @@ const speedSelect = document.querySelector<HTMLSelectElement>("#speed");
 const frameInput = document.querySelector<HTMLInputElement>("#frame");
 const timeOutput = document.querySelector<HTMLOutputElement>("#time");
 const statsOutput = document.querySelector<HTMLOutputElement>("#stats");
+const diagnosticsCanvas = document.querySelector<HTMLCanvasElement>("#diagnostics");
 
 if (!playButton || !speedSelect || !frameInput || !timeOutput || !statsOutput) {
   throw new Error("Missing demo controls");
@@ -255,12 +258,53 @@ const deck = new Deck({
   layers: [],
 });
 
+let timeLayer: TimeCOGLayer | null = null;
+
+function renderDiagnostics(): void {
+  if (!timeLayer || !diagnosticsCanvas) {
+    return;
+  }
+
+  try {
+    const snapshot = timeLayer.getDiagnosticSnapshot();
+
+    if (snapshot.frameIds.length > 0) {
+      renderTileDiagnostics(diagnosticsCanvas, snapshot);
+    }
+  } catch {
+    // Layer not yet initialized — retry next frame
+  }
+}
+
 function render(): void {
   if (!selectedFrame) {
     return;
   }
 
   timeOutput.value = new Date(selectedFrame.timeMs).toISOString();
+
+  timeLayer = new TimeCOGLayer({
+    id: "time-cog-layer-demo",
+        frames,
+        currentTime: selectedFrame.timeMs,
+        playing,
+        playbackRate,
+        getTileData: getPrecipTileData,
+        renderTile: renderPrecipTile,
+        opacity: DISPLAY_OPACITY,
+        missingFramePolicy: "nearest",
+        bufferPolicy: {
+          backwardFrames: 1,
+          forwardFrames: 3,
+        },
+        cachePolicy: {
+          maxFrames: 12,
+        },
+    onStats: (stats) => {
+      statsOutput.value = `${stats.readyFrameCount}/${stats.frameCount} ready, ${stats.scheduledFrameCount} scheduled`;
+    },
+  });
+
   deck.setProps({
     layers: [
       new TileLayer({
@@ -280,29 +324,11 @@ function render(): void {
           });
         },
       }),
-      new TimeCOGLayer({
-        id: "time-cog-layer-demo",
-        frames,
-        currentTime: selectedFrame.timeMs,
-        playing,
-        playbackRate,
-        getTileData: getPrecipTileData,
-        renderTile: renderPrecipTile,
-        opacity: DISPLAY_OPACITY,
-        missingFramePolicy: "nearest",
-        bufferPolicy: {
-          backwardFrames: 1,
-          forwardFrames: 3,
-        },
-        cachePolicy: {
-          maxFrames: 12,
-        },
-        onStats: (stats) => {
-          statsOutput.value = `${stats.readyFrameCount}/${stats.frameCount} ready, ${stats.scheduledFrameCount} scheduled`;
-        },
-      }),
+      timeLayer,
     ],
   });
+
+  requestAnimationFrame(() => renderDiagnostics());
 }
 
 function updateSliderFromTime(timeMs: number): void {

@@ -270,6 +270,9 @@ export class TimeSequenceTileLayer<
         };
 
         tileCache.put(currentFrameId, x, y, z, {
+          x,
+          y,
+          z,
           texture: r.texture,
           mask: r.mask,
           byteLength: r.byteLength ?? 0,

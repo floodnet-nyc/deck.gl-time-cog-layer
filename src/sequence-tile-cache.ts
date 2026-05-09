@@ -8,6 +8,9 @@ export type CachedTile = {
   byteLength: number;
   width: number;
   height: number;
+  x: number;
+  y: number;
+  z: number;
   quality: TileQuality;
   frameId: string;
   lastAccessMs: number;
@@ -88,6 +91,9 @@ export class SequenceTileCache {
 
     this.tiles.set(key, {
       ...tile,
+      x,
+      y,
+      z,
       frameId,
       lastAccessMs: Date.now(),
     });
@@ -139,6 +145,10 @@ export class SequenceTileCache {
       frameIds: [...frameIds],
       protectedFrameIds: [...this.protected],
     };
+  }
+
+  entries(): IterableIterator<[string, CachedTile]> {
+    return this.tiles.entries();
   }
 
   private evict(): void {
