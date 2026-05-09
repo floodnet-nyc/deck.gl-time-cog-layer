@@ -7,8 +7,8 @@ import type {
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { openGeoTIFF } from "./geotiff-source.js";
 import type { SequenceTileCache, TileQuality } from "./sequence-tile-cache.js";
-import { hasTile, imageForZ, isMissingTileError } from "./tile-utils.js";
-import type { NormalizedTimeCOGFrame } from "./types.js";
+import { hasTile, imageForZ, isMissingTileError, mapToCoarserZoom } from "./tile-utils.js";
+import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy } from "./types.js";
 
 type TileCoord = { x: number; y: number; z: number };
 
@@ -43,21 +43,33 @@ type PrefetchSnapshot = {
   playing: boolean;
   playbackRate: number;
   signal?: AbortSignal;
+  interactionMode: InteractionMode;
+  qualityPolicy: QualityPolicy;
 };
 
 const MAX_GEOTIFF_CACHE = 8;
 
 /**
- * Background tile-prefetch pipeline.
+ * Background tile-prefetch pipeline with progressive loading support.
  *
  * ## Role
  *
  * The prefetcher runs after every `TimeCOGLayer.updateState`.  It
  * receives the current visible tile coordinates, the frame schedule
- * window, and the playback direction.  For each scheduled frame
- * (excluding the target, which is already being loaded by the
- * sublayer), it creates a `(frameId, x, y, z, quality)` task and
- * scores it by temporal distance and playback direction.
+ * window, the interaction mode, and the quality policy.  For each
+ * scheduled frame (excluding the target, which is already being
+ * loaded by the sublayer), it creates `(frameId, x, y, z, quality)`
+ * tasks and scores them by temporal distance and playback direction.
+ *
+ * ## Progressive loading
+ *
+ * During seek / scrub interactions, tasks use biased (coarser) zoom
+ * levels so that preview tiles appear quickly.  After the interaction
+ * settles (idle mode), the prefetcher schedules full-resolution
+ * upgrade tasks for any tile that has a preview entry but no full
+ * entry.
+ *
+ * ## Execution
  *
  * Tasks are executed concurrently up to `maxConcurrent` (default 4).
  * Each task lazily opens the COG for the target frame, selects the
@@ -68,14 +80,13 @@ const MAX_GEOTIFF_CACHE = 8;
  * When the user seeks or the schedule window shifts, stale in-flight
  * tasks are aborted via `AbortController`.
  *
- * ## Scoring (simplified from the research prototype)
+ * ## Scoring
  *
  * ```text
  * priority = 100 - (absDistance * 20) + directionalBoost
  * ```
  *
- * Frames within ±2 steps of the playhead are fetched at `"full"`
- * quality; farther frames are fetched at `"preview"` quality.
+ * Upgrade tasks (preview → full) receive a flat high priority.
  */
 export class FramePrefetcher {
   private tileCache: SequenceTileCache;
@@ -107,15 +118,23 @@ export class FramePrefetcher {
 
     const scheduledIds = new Set(snapshot.scheduledFrames.map((f) => f.id));
 
-    for (const [, entry] of this.inFlight) {
+    const staleKeys: string[] = [];
+
+    for (const [key, entry] of this.inFlight) {
       if (!scheduledIds.has(entry.frameId)) {
         entry.controller.abort();
+        staleKeys.push(key);
       }
+    }
+
+    for (const key of staleKeys) {
+      this.inFlight.delete(key);
     }
 
     this.pruneQueue(scheduledIds);
 
     const newTasks: TileTask[] = [];
+    const interactionMode = snapshot.interactionMode;
 
     for (const frame of snapshot.scheduledFrames) {
       if (frame.id === snapshot.targetFrame.id) {
@@ -126,31 +145,91 @@ export class FramePrefetcher {
         snapshot.scheduledFrames.indexOf(frame) -
         snapshot.scheduledFrames.indexOf(snapshot.targetFrame);
 
+      const { quality, bias } = this.qualityForFrame(
+        interactionMode,
+        distanceIndex,
+        snapshot.qualityPolicy,
+      );
+
       for (const tile of snapshot.visibleTiles) {
-        const key = taskKey(frame.id, tile.x, tile.y, tile.z);
+        if (bias > 0) {
+          const preview = mapToCoarserZoom(tile.x, tile.y, tile.z, bias);
+          const key = taskKey(frame.id, preview.x, preview.y, preview.z);
 
-        if (this.tileCache.get(frame.id, tile.x, tile.y, tile.z)) {
-          continue;
+          if (this.tileCache.get(frame.id, preview.x, preview.y, preview.z)) {
+            continue;
+          }
+
+          if (this.inFlight.has(key) || this.queuedKeys.has(key)) {
+            continue;
+          }
+
+          newTasks.push({
+            frameId: frame.id,
+            frameUrl: frame.url,
+            requestInit: frame.requestInit,
+            x: preview.x,
+            y: preview.y,
+            z: preview.z,
+            quality,
+            priority: this.score(distanceIndex, snapshot.playing, snapshot.playbackRate),
+          });
+          this.queuedKeys.add(key);
+        } else {
+          const key = taskKey(frame.id, tile.x, tile.y, tile.z);
+
+          if (this.tileCache.get(frame.id, tile.x, tile.y, tile.z)) {
+            continue;
+          }
+
+          if (this.inFlight.has(key) || this.queuedKeys.has(key)) {
+            continue;
+          }
+
+          newTasks.push({
+            frameId: frame.id,
+            frameUrl: frame.url,
+            requestInit: frame.requestInit,
+            x: tile.x,
+            y: tile.y,
+            z: tile.z,
+            quality,
+            priority: this.score(distanceIndex, snapshot.playing, snapshot.playbackRate),
+          });
+          this.queuedKeys.add(key);
         }
+      }
+    }
 
-        if (this.inFlight.has(key) || this.queuedKeys.has(key)) {
-          continue;
+    if (interactionMode === "idle") {
+      for (const frame of snapshot.scheduledFrames) {
+        for (const tile of snapshot.visibleTiles) {
+          const exactKey = taskKey(frame.id, tile.x, tile.y, tile.z);
+
+          if (this.tileCache.get(frame.id, tile.x, tile.y, tile.z)) {
+            continue;
+          }
+
+          if (this.inFlight.has(exactKey) || this.queuedKeys.has(exactKey)) {
+            continue;
+          }
+
+          const best = this.tileCache.getBest(frame.id, tile.x, tile.y, tile.z, 2);
+
+          if (best && best.quality !== "full") {
+            newTasks.push({
+              frameId: frame.id,
+              frameUrl: frame.url,
+              requestInit: frame.requestInit,
+              x: tile.x,
+              y: tile.y,
+              z: tile.z,
+              quality: "full",
+              priority: 1000,
+            });
+            this.queuedKeys.add(exactKey);
+          }
         }
-
-        const quality: TileQuality =
-          Math.abs(distanceIndex) <= 2 ? "full" : "preview";
-
-        newTasks.push({
-          frameId: frame.id,
-          frameUrl: frame.url,
-          requestInit: frame.requestInit,
-          x: tile.x,
-          y: tile.y,
-          z: tile.z,
-          quality,
-          priority: this.score(distanceIndex, snapshot.playing, snapshot.playbackRate),
-        });
-        this.queuedKeys.add(key);
       }
     }
 
@@ -283,6 +362,26 @@ export class FramePrefetcher {
     const distancePenalty = absDistance * 20;
 
     return 100 - distancePenalty + directionalBoost;
+  }
+
+  private qualityForFrame(
+    mode: InteractionMode,
+    _distanceIndex: number,
+    policy: QualityPolicy,
+  ): { quality: TileQuality; bias: number } {
+    if (policy.lowResFirst === false) {
+      return { quality: "preview", bias: 0 };
+    }
+
+    if (mode === "scrubbing") {
+      return { quality: "preview", bias: policy.scrubOverviewBias ?? 2 };
+    }
+
+    if (mode === "seeking") {
+      return { quality: "preview", bias: policy.previewOverviewBias ?? 1 };
+    }
+
+    return { quality: "preview", bias: policy.previewOverviewBias ?? 1 };
   }
 
   private pruneQueue(scheduledIds: Set<string>): void {

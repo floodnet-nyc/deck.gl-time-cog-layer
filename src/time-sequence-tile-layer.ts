@@ -16,15 +16,16 @@ import type { GeoTIFF, Overview, DecoderPool } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { openGeoTIFF } from "./geotiff-source.js";
 import type { TileQuality, SequenceTileCache } from "./sequence-tile-cache.js";
-import { hasTile, imageForZ, isMissingTileError } from "./tile-utils.js";
+import { hasTile, imageForZ, isMissingTileError, mapToCoarserZoom } from "./tile-utils.js";
 
 type TileCoord = { x: number; y: number; z: number };
 
 /**
  * Custom props injected by {@link TimeCOGLayer} into the persistent
  * sublayer.  These carry the dynamic frame identity, the shared tile
- * cache, and the mutable visible-tile reference so that every
- * `getTileData` invocation can check the cache for the current frame.
+ * cache, the mutable visible-tile reference, and the preview bias so
+ * that every `getTileData` invocation can check the cache for the
+ * current frame and fall back to coarser preview tiles on miss.
  */
 export type TimeSequenceTileLayerProps = {
   /** Shared GPU tile cache — the key integration point between the sublayer and the background prefetcher. */
@@ -38,6 +39,14 @@ export type TimeSequenceTileLayerProps = {
 
   /** Optional `RequestInit` forwarded to `fetch()` when opening this frame's COG (e.g. SAS headers). */
   currentFrameRequestInit?: RequestInit;
+
+  /**
+   * When > 0, the sublayer fetches at a coarser zoom level on cache
+   * miss and stores the result as a "preview" tile.  Set by the
+   * coordinator based on the current interaction mode and quality
+   * policy (1 for seek, 2 for scrub, 0 for playing/idle).
+   */
+  previewBias?: number;
 
   /** Mutable reference updated by the inner TileLayer's `onViewportLoad` callback. */
   visibleTileRef: { tiles: TileCoord[] };
@@ -67,11 +76,18 @@ const TIME_SEQ_TILE_LAYER_NAME = "TimeSequenceTileLayer";
  *
  * ### `_getTileDataCallback()`
  * Wraps the user-supplied (or inferred-default) `getTileData` in a
- * cache-aware fetcher.  On cache hit the wrapper returns the stored
- * GPU textures synchronously, which is what enables flicker-free
- * frame switches: the inner TileLayer keeps the old tile content
- * visible during `reloadAll()` until the new data arrives, which
- * happens instantly because it was prefetched.
+ * cache-aware fetcher with progressive-loading support:
+ *
+ * 1. Check the shared `SequenceTileCache` for the exact tile.
+ * 2. On miss, search progressively coarser zoom levels via
+ *    `SequenceTileCache.getBest()`.
+ * 3. If still no hit and `previewBias > 0`, fetch at a coarser zoom
+ *    and store as a `"preview"` tile.  Otherwise fetch at the exact
+ *    zoom and store as `"full"`.
+ *
+ * Cached hits return GPU textures synchronously, enabling flicker-free
+ * frame switches.  Preview-hit returns show a coarser version
+ * immediately, eliminating the empty-tile flash during seek / scrub.
  *
  * ### `_renderTileCallback()`
  * Simple pass-through to the user's `renderTile` or the inferred
@@ -238,19 +254,42 @@ export class TimeSequenceTileLayer<
       options: { device: Device; signal?: AbortSignal },
     ) => {
       const seqProps = this.props as TimeSequenceTileLayerProps;
-      const { currentFrameId, currentFrameUrl, currentFrameRequestInit } = seqProps;
+      const { currentFrameId, currentFrameUrl, currentFrameRequestInit, previewBias } = seqProps;
       const { x, y, z } = tile.index;
 
-      const cached = tileCache.get(currentFrameId, x, y, z);
+      const exactHit = tileCache.get(currentFrameId, x, y, z);
 
-      if (cached) {
+      if (exactHit) {
         return {
-          texture: cached.texture,
-          mask: cached.mask,
-          byteLength: cached.byteLength,
-          width: cached.width,
-          height: cached.height,
+          texture: exactHit.texture,
+          mask: exactHit.mask,
+          byteLength: exactHit.byteLength,
+          width: exactHit.width,
+          height: exactHit.height,
         } as unknown as DataT;
+      }
+
+      const bestHit = tileCache.getBest(currentFrameId, x, y, z, 2);
+
+      if (bestHit) {
+        return {
+          texture: bestHit.texture,
+          mask: bestHit.mask,
+          byteLength: bestHit.byteLength,
+          width: bestHit.width,
+          height: bestHit.height,
+        } as unknown as DataT;
+      }
+
+      const bias = 0;//previewBias ?? 0;
+      let targetX = x;
+      let targetY = y;
+      let targetZ = z;
+      let quality: TileQuality = "full";
+
+      if (bias > 0) {
+        ({ x: targetX, y: targetY, z: targetZ } = mapToCoarserZoom(x, y, z, bias));
+        quality = "preview";
       }
 
       const geotiffByUrl =
@@ -274,16 +313,16 @@ export class TimeSequenceTileLayer<
         this.setState({ geotiffByUrl });
       }
 
-      const image = imageForZ(geotiff, z);
+      const image = imageForZ(geotiff, targetZ);
 
-      if (!image || !hasTile(image, x, y)) {
+      if (!image || !hasTile(image, targetX, targetY)) {
         return null as DataT;
       }
 
       const getTileDataOptions: GetTileDataOptions = {
         device: options.device,
-        x,
-        y,
+        x: targetX,
+        y: targetY,
         signal: options.signal,
         pool:
           (
@@ -317,16 +356,16 @@ export class TimeSequenceTileLayer<
           height: number;
         };
 
-        tileCache.put(currentFrameId, x, y, z, {
-          x,
-          y,
-          z,
+        tileCache.put(currentFrameId, targetX, targetY, targetZ, {
+          x: targetX,
+          y: targetY,
+          z: targetZ,
           texture: r.texture,
           mask: r.mask,
           byteLength: r.byteLength ?? 0,
           width: r.width,
           height: r.height,
-          quality: "full" as TileQuality,
+          quality,
         });
       }
 

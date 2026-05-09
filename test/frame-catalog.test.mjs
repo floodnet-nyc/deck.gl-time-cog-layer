@@ -9,6 +9,7 @@ import {
   hasTile,
   imageForZ,
   isMissingTileError,
+  mapToCoarserZoom,
   normalizeFrameCatalog,
   resolveFrameForTime,
   scheduleFrameWindow,
@@ -171,6 +172,8 @@ test("frame prefetcher deduplicates and prunes queued tasks with colon frame ids
     pool: {},
     playing: true,
     playbackRate: 1,
+    interactionMode: "playing",
+    qualityPolicy: {},
   };
 
   prefetcher.update(snapshot);
@@ -251,6 +254,8 @@ test("frame prefetcher suppresses expected missing COG tile warnings", async () 
       pool: {},
       playing: true,
       playbackRate: 1,
+      interactionMode: "playing",
+      qualityPolicy: {},
     });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -259,4 +264,510 @@ test("frame prefetcher suppresses expected missing COG tile warnings", async () 
   }
 
   assert.deepEqual(warnings, []);
+});
+
+// ─── Phase 1: progressive loading, onFrameReady, descriptor validation ───
+
+test("mapToCoarserZoom halves coordinates at bias 1", () => {
+  assert.deepEqual(mapToCoarserZoom(8, 6, 3, 1), { x: 4, y: 3, z: 2 });
+});
+
+test("mapToCoarserZoom quarters coordinates at bias 2", () => {
+  assert.deepEqual(mapToCoarserZoom(8, 7, 4, 2), { x: 2, y: 1, z: 2 });
+});
+
+test("mapToCoarserZoom clamps z at bias exceeding zoom", () => {
+  assert.deepEqual(mapToCoarserZoom(4, 2, 1, 2), { x: 1, y: 0, z: 0 });
+});
+
+test("mapToCoarserZoom returns identity at bias 0", () => {
+  assert.deepEqual(mapToCoarserZoom(5, 5, 5, 0), { x: 5, y: 5, z: 5 });
+});
+
+test("SequenceTileCache.getBest returns exact match on first try", () => {
+  const cache = new SequenceTileCache();
+  const tex = { destroy() {} };
+  cache.put("f1", 2, 3, 2, { texture: tex, byteLength: 1, width: 1, height: 1, quality: "full" });
+
+  const result = cache.getBest("f1", 2, 3, 2, 2);
+  assert.ok(result);
+  assert.equal(result.quality, "full");
+  assert.equal(result.x, 2);
+});
+
+test("SequenceTileCache.getBest falls back to coarser zoom", () => {
+  const cache = new SequenceTileCache();
+  const tex = { destroy() {} };
+  cache.put("f1", 1, 1, 1, { texture: tex, byteLength: 1, width: 1, height: 1, quality: "preview" });
+
+  const result = cache.getBest("f1", 2, 3, 2, 2);
+  assert.ok(result);
+  assert.equal(result.quality, "preview");
+  assert.equal(result.x, 1);
+});
+
+test("SequenceTileCache.getBest returns undefined when no levels match", () => {
+  const cache = new SequenceTileCache();
+  const result = cache.getBest("f1", 4, 4, 3, 2);
+  assert.equal(result, undefined);
+});
+
+test("SequenceTileCache.getBest only searches same frame", () => {
+  const cache = new SequenceTileCache();
+  cache.put("f1", 1, 1, 1, { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1, quality: "full" });
+  const result = cache.getBest("f2", 2, 3, 2, 2);
+  assert.equal(result, undefined);
+});
+
+test("SequenceTileCache.hasFullCoverage returns true when all tiles present at full", () => {
+  const cache = new SequenceTileCache();
+  cache.put("f1", 0, 0, 1, { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1, quality: "full" });
+  cache.put("f1", 1, 0, 1, { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1, quality: "full" });
+
+  assert.equal(cache.hasFullCoverage("f1", [{ x: 0, y: 0, z: 1 }, { x: 1, y: 0, z: 1 }]), true);
+});
+
+test("SequenceTileCache.hasFullCoverage returns false when a tile is missing", () => {
+  const cache = new SequenceTileCache();
+  cache.put("f1", 0, 0, 1, { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1, quality: "full" });
+
+  assert.equal(cache.hasFullCoverage("f1", [{ x: 0, y: 0, z: 1 }, { x: 1, y: 0, z: 1 }]), false);
+});
+
+test("SequenceTileCache.hasFullCoverage returns false when tile is preview, not full", () => {
+  const cache = new SequenceTileCache();
+  cache.put("f1", 0, 0, 1, { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1, quality: "preview" });
+
+  assert.equal(cache.hasFullCoverage("f1", [{ x: 0, y: 0, z: 1 }]), false);
+});
+
+test("SequenceTileCache.hasFullCoverage returns false for empty tile list", () => {
+  const cache = new SequenceTileCache();
+  assert.equal(cache.hasFullCoverage("f1", []), false);
+});
+
+test("SequenceTileCache allows preview-to-full quality upgrade on put", () => {
+  const destroyed = [];
+  const cache = new SequenceTileCache();
+
+  cache.put("f1", 0, 0, 0, {
+    texture: { destroy() {},
+    },
+    byteLength: 1,
+    width: 1,
+    height: 1,
+    quality: "preview",
+  });
+
+  const first = cache.get("f1", 0, 0, 0);
+  assert.equal(first.quality, "preview");
+
+  cache.put("f1", 0, 0, 0, {
+    texture: { destroy() {},
+    },
+    byteLength: 2,
+    width: 2,
+    height: 2,
+    quality: "full",
+  });
+
+  const second = cache.get("f1", 0, 0, 0);
+  assert.equal(second.quality, "full");
+  assert.equal(second.byteLength, 2);
+});
+
+test("SequenceTileCache does not downgrade full to preview on put", () => {
+  const cache = new SequenceTileCache();
+
+  cache.put("f1", 0, 0, 0, {
+    texture: { destroy() {} },
+    byteLength: 2,
+    width: 2,
+    height: 2,
+    quality: "full",
+  });
+
+  cache.put("f1", 0, 0, 0, {
+    texture: { destroy() {} },
+    byteLength: 1,
+    width: 1,
+    height: 1,
+    quality: "preview",
+  });
+
+  const result = cache.get("f1", 0, 0, 0);
+  assert.equal(result.quality, "full");
+  assert.equal(result.byteLength, 2);
+});
+
+test("frame prefetcher creates preview tasks at biased zoom during seeking", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = {
+    id: "target",
+    time: 0,
+    timeMs: 0,
+    url: "http://ex/0.tif",
+    cacheKey: "0",
+    sourceIndex: 0,
+  };
+  const nextFrame = {
+    id: "next",
+    time: 1,
+    timeMs: 1,
+    url: "http://ex/1.tif",
+    cacheKey: "1",
+    sourceIndex: 1,
+  };
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nextFrame],
+    visibleTiles: [{ x: 4, y: 2, z: 3 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "seeking",
+    qualityPolicy: { previewOverviewBias: 1 },
+  });
+
+  assert.equal(prefetcher.queue.length, 1);
+  assert.equal(prefetcher.queue[0].quality, "preview");
+  assert.equal(prefetcher.queue[0].x, 2);
+  assert.equal(prefetcher.queue[0].y, 1);
+  assert.equal(prefetcher.queue[0].z, 2);
+});
+
+test("frame prefetcher creates preview tasks at coarser bias during scrubbing", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = {
+    id: "target",
+    time: 0,
+    timeMs: 0,
+    url: "http://ex/0.tif",
+    cacheKey: "0",
+    sourceIndex: 0,
+  };
+  const nextFrame = {
+    id: "next",
+    time: 1,
+    timeMs: 1,
+    url: "http://ex/1.tif",
+    cacheKey: "1",
+    sourceIndex: 1,
+  };
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nextFrame],
+    visibleTiles: [{ x: 8, y: 4, z: 4 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "scrubbing",
+    qualityPolicy: { scrubOverviewBias: 2 },
+  });
+
+  assert.equal(prefetcher.queue.length, 1);
+  assert.equal(prefetcher.queue[0].quality, "preview");
+  assert.equal(prefetcher.queue[0].x, 2);
+  assert.equal(prefetcher.queue[0].y, 1);
+  assert.equal(prefetcher.queue[0].z, 2);
+});
+
+test("frame prefetcher creates preview tasks at biased zoom during playing for nearby frames", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = {
+    id: "target",
+    time: 0,
+    timeMs: 0,
+    url: "http://ex/0.tif",
+    cacheKey: "0",
+    sourceIndex: 0,
+  };
+  const nextFrame = {
+    id: "next",
+    time: 1,
+    timeMs: 1,
+    url: "http://ex/1.tif",
+    cacheKey: "1",
+    sourceIndex: 1,
+  };
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nextFrame],
+    visibleTiles: [{ x: 4, y: 2, z: 3 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: true,
+    playbackRate: 1,
+    interactionMode: "playing",
+    qualityPolicy: { previewOverviewBias: 1 },
+  });
+
+  assert.equal(prefetcher.queue.length, 1);
+  assert.equal(prefetcher.queue[0].quality, "preview");
+  assert.equal(prefetcher.queue[0].x, 2);
+  assert.equal(prefetcher.queue[0].y, 1);
+  assert.equal(prefetcher.queue[0].z, 2);
+});
+
+test("frame prefetcher in idle mode creates upgrade tasks for preview-only tiles", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = {
+    id: "target",
+    time: 0,
+    timeMs: 0,
+    url: "http://ex/0.tif",
+    cacheKey: "0",
+    sourceIndex: 0,
+  };
+  const nextFrame = {
+    id: "next",
+    time: 1,
+    timeMs: 1,
+    url: "http://ex/1.tif",
+    cacheKey: "1",
+    sourceIndex: 1,
+  };
+
+  cache.put("next", 2, 1, 2, {
+    texture: { destroy() {} },
+    byteLength: 1,
+    width: 1,
+    height: 1,
+    quality: "preview",
+    x: 2,
+    y: 1,
+    z: 2,
+  });
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nextFrame],
+    visibleTiles: [{ x: 4, y: 2, z: 3 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "idle",
+    qualityPolicy: {},
+  });
+
+  assert.equal(prefetcher.queue.length, 1);
+  assert.equal(prefetcher.queue[0].quality, "full");
+  assert.equal(prefetcher.queue[0].x, 4);
+  assert.equal(prefetcher.queue[0].y, 2);
+  assert.equal(prefetcher.queue[0].z, 3);
+  assert.equal(prefetcher.queue[0].priority, 1000);
+});
+
+test("frame prefetcher in idle mode skips upgrade when full tile already cached", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = {
+    id: "target",
+    time: 0,
+    timeMs: 0,
+    url: "http://ex/0.tif",
+    cacheKey: "0",
+    sourceIndex: 0,
+  };
+  const nextFrame = {
+    id: "next",
+    time: 1,
+    timeMs: 1,
+    url: "http://ex/1.tif",
+    cacheKey: "1",
+    sourceIndex: 1,
+  };
+
+  cache.put("next", 4, 2, 3, {
+    texture: { destroy() {} },
+    byteLength: 2,
+    width: 2,
+    height: 2,
+    quality: "full",
+    x: 4,
+    y: 2,
+    z: 3,
+  });
+
+  cache.put("next", 2, 1, 2, {
+    texture: { destroy() {} },
+    byteLength: 1,
+    width: 1,
+    height: 1,
+    quality: "preview",
+    x: 2,
+    y: 1,
+    z: 2,
+  });
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nextFrame],
+    visibleTiles: [{ x: 4, y: 2, z: 3 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "idle",
+    qualityPolicy: {},
+  });
+
+  assert.equal(prefetcher.queue.length, 0);
+});
+
+test("frame prefetcher respects lowResFirst: false in qualityPolicy", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = {
+    id: "target",
+    time: 0,
+    timeMs: 0,
+    url: "http://ex/0.tif",
+    cacheKey: "0",
+    sourceIndex: 0,
+  };
+  const nextFrame = {
+    id: "next",
+    time: 1,
+    timeMs: 1,
+    url: "http://ex/1.tif",
+    cacheKey: "1",
+    sourceIndex: 1,
+  };
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nextFrame],
+    visibleTiles: [{ x: 4, y: 2, z: 3 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "seeking",
+    qualityPolicy: { lowResFirst: false, previewOverviewBias: 1 },
+  });
+
+  assert.equal(prefetcher.queue.length, 1);
+  assert.equal(prefetcher.queue[0].quality, "preview");
+  assert.equal(prefetcher.queue[0].x, 4);
+  assert.equal(prefetcher.queue[0].y, 2);
+  assert.equal(prefetcher.queue[0].z, 3);
+});
+
+test("frame prefetcher skips target frame in all interaction modes", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 0);
+
+  const targetFrame = {
+    id: "target",
+    time: 0,
+    timeMs: 0,
+    url: "http://ex/0.tif",
+    cacheKey: "0",
+    sourceIndex: 0,
+  };
+
+  for (const mode of ["idle", "seeking", "scrubbing", "playing"]) {
+    prefetcher.update({
+      targetFrame,
+      scheduledFrames: [targetFrame],
+      visibleTiles: [{ x: 0, y: 0, z: 0 }],
+      device: {},
+      getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+      pool: {},
+      playing: mode === "playing",
+      playbackRate: mode === "playing" ? 1 : 0,
+      interactionMode: mode,
+      qualityPolicy: {},
+    });
+
+    assert.equal(prefetcher.queue.length, 0, `queue should be empty in ${mode} mode when only target frame is scheduled`);
+  }
+});
+
+test("frame prefetcher aborts stale in-flight tasks when frame leaves window", () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 2);
+
+  const targetFrame = {
+    id: "target",
+    time: 0,
+    timeMs: 0,
+    url: "http://ex/0.tif",
+    cacheKey: "0",
+    sourceIndex: 0,
+  };
+  const frameA = {
+    id: "A",
+    time: 1,
+    timeMs: 1,
+    url: "http://ex/1.tif",
+    cacheKey: "1",
+    sourceIndex: 1,
+  };
+  const frameB = {
+    id: "B",
+    time: 2,
+    timeMs: 2,
+    url: "http://ex/2.tif",
+    cacheKey: "2",
+    sourceIndex: 2,
+  };
+
+  prefetcher.geotiffs.set("A", { overviews: [], tileCount: { x: 5, y: 5 } });
+  prefetcher.geotiffs.set("B", { overviews: [], tileCount: { x: 5, y: 5 } });
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, frameA, frameB],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: true,
+    playbackRate: 1,
+    interactionMode: "playing",
+    qualityPolicy: {},
+  });
+
+  const inFlightBefore = prefetcher.inFlight.size;
+  assert.ok(inFlightBefore > 0, "should have in-flight tasks before update");
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame],
+    visibleTiles: [{ x: 0, y: 0, z: 0 }],
+    device: {},
+    getUserTileData: async () => ({ texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 }),
+    pool: {},
+    playing: true,
+    playbackRate: 1,
+    interactionMode: "playing",
+    qualityPolicy: {},
+  });
+
+  assert.equal(prefetcher.inFlight.size, 0, "all in-flight tasks should be cleared when frames leave window");
+  assert.equal(prefetcher.queue.length, 0, "queue should be pruned when frames leave window");
 });

@@ -293,6 +293,9 @@ function render(): void {
         renderTile: renderPrecipTile,
         opacity: DISPLAY_OPACITY,
         missingFramePolicy: "nearest",
+        qualityPolicy: {
+          lowResFirst: false,
+        },
         bufferPolicy: {
           backwardFrames: 1,
           forwardFrames: 3,

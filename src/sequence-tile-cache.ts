@@ -108,14 +108,65 @@ export class SequenceTileCache {
     y: number,
     z: number,
   ): CachedTile | undefined {
-    const key = tileKey(frameId, x, y, z);
-    const tile = this.tiles.get(key);
+    return this.lookup(frameId, x, y, z);
+  }
 
-    if (tile) {
-      tile.lastAccessMs = Date.now();
+  /**
+   * Return the best available cached tile for a given coordinate,
+   * searching progressively coarser zoom levels.
+   *
+   * First tries the exact `(frameId, x, y, z)` key.  On miss, maps
+   * the coordinates to coarser zoom levels (power-of-2 pyramid) up to
+   * `maxBias` levels and returns the first hit — which is the closest
+   * available resolution to the target zoom.
+   */
+  getBest(
+    frameId: string,
+    x: number,
+    y: number,
+    z: number,
+    maxBias = 2,
+  ): CachedTile | undefined {
+    let cx = x;
+    let cy = y;
+    let cz = z;
+
+    for (let bias = 0; bias <= maxBias && cz >= 0; bias += 1) {
+      const tile = this.lookup(frameId, cx, cy, cz);
+
+      if (tile) {
+        return tile;
+      }
+
+      cx = Math.floor(cx / 2);
+      cy = Math.floor(cy / 2);
+      cz = cz - 1;
     }
 
-    return tile;
+    return undefined;
+  }
+
+  /**
+   * Check whether every tile in `tiles` exists in the cache for
+   * `frameId` at `"full"` quality.
+   */
+  hasFullCoverage(
+    frameId: string,
+    tiles: readonly { x: number; y: number; z: number }[],
+  ): boolean {
+    if (tiles.length === 0) {
+      return false;
+    }
+
+    for (const t of tiles) {
+      const entry = this.lookup(frameId, t.x, t.y, t.z);
+
+      if (!entry || entry.quality !== "full") {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   /**
@@ -215,6 +266,22 @@ export class SequenceTileCache {
 
   entries(): IterableIterator<[string, CachedTile]> {
     return this.tiles.entries();
+  }
+
+  private lookup(
+    frameId: string,
+    x: number,
+    y: number,
+    z: number,
+  ): CachedTile | undefined {
+    const key = tileKey(frameId, x, y, z);
+    const tile = this.tiles.get(key);
+
+    if (tile) {
+      tile.lastAccessMs = Date.now();
+    }
+
+    return tile;
   }
 
   private evict(): void {
