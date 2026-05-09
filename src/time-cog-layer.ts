@@ -115,19 +115,13 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       ...passThrough,
       id: `${this.props.id}-tiles`,
       geotiff: initialUrl,
-      getTileData: this.props.getTileData as (
-        image: GeoTIFF | Overview,
-        options: Record<string, unknown>,
-      ) => Promise<Record<string, unknown>>,
-      renderTile: this.props.renderTile as (
-        data: Record<string, unknown>,
-      ) => Record<string, unknown> | null,
+      getTileData: this.props.getTileData as never,
+      renderTile: this.props.renderTile as never,
       sequenceTileCache: state.tileCache,
       currentFrameId: frame.id,
       currentFrameUrl: frame.url,
-      prefetcher: state.prefetcher,
       visibleTileRef: state.visibleTileRef,
-    });
+    } as object);
   }
 
   finalizeState(): void {

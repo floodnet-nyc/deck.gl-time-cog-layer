@@ -1,6 +1,6 @@
-import type { Device } from "@luma.gl/core";
-import type { Texture } from "@luma.gl/core";
-import type { _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
+import type { Device, Texture } from "@luma.gl/core";
+import type { Layer } from "@deck.gl/core";
+import type { _Tile2DHeader as Tile2DHeader, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
 import { TileLayer } from "@deck.gl/geo-layers";
 import {
   RasterTileLayer,
@@ -15,15 +15,13 @@ import { COGLayer } from "@developmentseed/deck.gl-geotiff";
 import type { GeoTIFF, Overview, DecoderPool } from "@developmentseed/geotiff";
 import { GeoTIFF as GeoTIFFClass, defaultDecoderPool } from "@developmentseed/geotiff";
 import type { TileQuality, SequenceTileCache } from "./sequence-tile-cache.js";
-import type { FramePrefetcher } from "./frame-prefetcher.js";
 
 type TileCoord = { x: number; y: number; z: number };
 
-export type TimeSequenceTileLayerProps<DataT extends MinimalTileData = MinimalTileData> = {
+export type TimeSequenceTileLayerProps = {
   sequenceTileCache: SequenceTileCache;
   currentFrameId: string;
   currentFrameUrl: string;
-  prefetcher: FramePrefetcher;
   visibleTileRef: { tiles: TileCoord[] };
 };
 
@@ -34,9 +32,10 @@ export class TimeSequenceTileLayer<
 > extends COGLayer<DataT> {
   static layerName = TIME_SEQ_TILE_LAYER_NAME;
 
-  declare props: COGLayer<DataT>["props"] & TimeSequenceTileLayerProps<DataT>;
+  declare props: COGLayer<DataT>["props"] & TimeSequenceTileLayerProps;
   declare state: COGLayer<DataT>["state"] & {
     geotiffByUrl?: Map<string, GeoTIFF>;
+    lastFrameId?: string;
   };
 
   initializeState(): void {
@@ -44,22 +43,117 @@ export class TimeSequenceTileLayer<
     this.setState({ geotiffByUrl: new Map() });
   }
 
-  updateState(
-    params: Parameters<COGLayer<DataT>["updateState"]>[0],
-  ): void {
-    const oldProps = params.oldProps as
-      | (COGLayer<DataT>["props"] & TimeSequenceTileLayerProps<DataT>)
-      | undefined;
-    const oldFrameId = oldProps?.currentFrameId;
+  finalizeState(context: Parameters<COGLayer<DataT>["finalizeState"]>[0]): void {
+    super.finalizeState(context);
+  }
 
-    super.updateState(params);
+  renderLayers(): Layer | null {
+    const descriptor = this._tilesetDescriptor();
 
-    const newFrameId = (this.props as TimeSequenceTileLayerProps<DataT>)
-      .currentFrameId;
-
-    if (newFrameId !== oldFrameId) {
-      this.setNeedsUpdate();
+    if (!descriptor) {
+      return null;
     }
+
+    const resolvedDescriptor = descriptor;
+
+    const tileFetchFn = this._getTileDataCallback();
+    const renderTileFn = this._renderTileCallback();
+
+    if (!tileFetchFn || !renderTileFn) {
+      return null;
+    }
+
+    const seqProps = this.props as TimeSequenceTileLayerProps;
+    const { visibleTileRef, currentFrameId } = seqProps;
+
+    class TilesetFactory extends RasterTileset2D {
+      constructor(
+        opts: ConstructorParameters<typeof RasterTileset2D>[0],
+      ) {
+        super(opts, resolvedDescriptor);
+      }
+    }
+
+    const base = this as unknown as {
+      _renderSubLayers: (
+        subProps: Record<string, unknown>,
+        desc: TilesetDescriptor,
+        rt: (data: DataT) => RenderTileResult | null,
+      ) => Layer[];
+    };
+    const updateTriggers = (this.props as Record<string, unknown>)
+      .updateTriggers as Record<string, unknown> | undefined;
+    const userSignal = (this.props as Record<string, unknown>)
+      .signal as AbortSignal | undefined;
+
+    const renderSubLayers = (
+      subProps: Record<string, unknown>,
+    ): Layer[] => {
+      return base._renderSubLayers(
+        subProps,
+        resolvedDescriptor,
+        renderTileFn,
+      );
+    };
+
+    return new TileLayer({
+      id: `raster-tile-layer-${this.id}`,
+      TilesetClass: TilesetFactory,
+      getTileData: (tile: TileLoadProps) => {
+        const { signal: tileSignal } = tile;
+        const signal =
+          userSignal && tileSignal
+            ? AbortSignal.any([userSignal, tileSignal])
+            : (userSignal ?? tileSignal);
+        const options = {
+          device: this.context.device,
+          signal,
+        };
+        return tileFetchFn(tile, options);
+      },
+      renderSubLayers,
+      updateTriggers: {
+        getTileData: currentFrameId,
+        renderSubLayers: updateTriggers?.renderTile,
+      },
+      tileSize: (this.props as Record<string, unknown>).tileSize as
+        | number
+        | undefined,
+      zoomOffset: (this.props as Record<string, unknown>).zoomOffset as
+        | number
+        | undefined,
+      maxZoom: (this.props as Record<string, unknown>).maxZoom as
+        | number
+        | undefined,
+      minZoom: (this.props as Record<string, unknown>).minZoom as
+        | number
+        | undefined,
+      extent: (this.props as Record<string, unknown>).extent as
+        | [number, number, number, number]
+        | undefined,
+      debounceTime: (this.props as Record<string, unknown>).debounceTime as
+        | number
+        | undefined,
+      maxCacheSize: (this.props as Record<string, unknown>).maxCacheSize as
+        | number
+        | undefined,
+      maxCacheByteSize: (this.props as Record<string, unknown>)
+        .maxCacheByteSize as number | undefined,
+      maxRequests: (this.props as Record<string, unknown>).maxRequests as
+        | number
+        | undefined,
+      refinementStrategy: (this.props as Record<string, unknown>)
+        .refinementStrategy as never,
+      onViewportLoad: (loadedTiles: Tile2DHeader<Record<string, unknown>>[]) => {
+        if (visibleTileRef) {
+          visibleTileRef.tiles = loadedTiles.map((t) => ({
+            x: t.index.x,
+            y: t.index.y,
+            z: t.index.z,
+          }));
+        }
+      },
+    });
   }
 
   protected _getTileDataCallback(): ReturnType<
@@ -81,7 +175,7 @@ export class TimeSequenceTileLayer<
       tile: TileLoadProps,
       options: { device: Device; signal?: AbortSignal },
     ) => {
-      const seqProps = this.props as TimeSequenceTileLayerProps<DataT>;
+      const seqProps = this.props as TimeSequenceTileLayerProps;
       const { currentFrameId, currentFrameUrl } = seqProps;
       const { x, y, z } = tile.index;
 
@@ -122,7 +216,7 @@ export class TimeSequenceTileLayer<
           : geotiff.overviews[geotiff.overviews.length - 1 - z];
 
       if (!image) {
-        return null;
+        return null as DataT;
       }
 
       const getTileDataOptions: GetTileDataOptions = {
@@ -138,16 +232,12 @@ export class TimeSequenceTileLayer<
 
       const result = await (
         userFn as (
-          image: GeoTIFF | Overview,
+          img: GeoTIFF | Overview,
           opts: GetTileDataOptions,
         ) => Promise<DataT>
       )(image, getTileDataOptions);
 
-      if (
-        result &&
-        typeof result === "object" &&
-        "texture" in result
-      ) {
+      if (result && typeof result === "object" && "texture" in result) {
         const r = result as unknown as {
           texture: Texture;
           mask?: Texture;
@@ -180,115 +270,5 @@ export class TimeSequenceTileLayer<
     }
 
     return userFn as (data: DataT) => RenderTileResult | null;
-  }
-
-  protected _renderTileLayer(
-    descriptor: TilesetDescriptor,
-    tileFetchFn: (
-      tile: TileLoadProps,
-      options: { device: Device; signal?: AbortSignal },
-    ) => Promise<DataT>,
-    renderTileFn: (data: DataT) => RenderTileResult | null,
-  ): TileLayer {
-    class TilesetFactory extends RasterTileset2D {
-      constructor(
-        opts: ConstructorParameters<typeof RasterTileset2D>[0],
-      ) {
-        super(opts, descriptor);
-      }
-    }
-
-    const props = this.props as TimeSequenceTileLayerProps<DataT> & {
-      tileSize?: number;
-      zoomOffset?: number;
-      maxZoom?: number;
-      minZoom?: number;
-      extent?: [number, number, number, number];
-      debounceTime?: number;
-      maxCacheSize?: number;
-      maxCacheByteSize?: number;
-      maxRequests?: number;
-      refinementStrategy?: string;
-      updateTriggers?: Record<string, unknown>;
-      signal?: AbortSignal;
-    };
-
-    const {
-      tileSize,
-      zoomOffset,
-      maxZoom,
-      minZoom,
-      extent,
-      debounceTime,
-      maxCacheSize,
-      maxCacheByteSize,
-      maxRequests,
-      refinementStrategy,
-      updateTriggers,
-      visibleTileRef,
-      currentFrameId,
-      signal: userSignal,
-    } = props;
-
-    const renderSubLayers = (
-      subProps: Record<string, unknown>,
-    ): Layer[] => {
-      const base = this as unknown as {
-        _renderSubLayers: (
-          s: Record<string, unknown>,
-          d: TilesetDescriptor,
-          r: (data: DataT) => RenderTileResult | null,
-        ) => Layer[];
-      };
-      return base._renderSubLayers(
-        subProps,
-        descriptor,
-        renderTileFn,
-      );
-    };
-
-    return new TileLayer({
-      id: `raster-tile-layer-${this.id}`,
-      TilesetClass: TilesetFactory,
-      getTileData: (tile: TileLoadProps) => {
-        const { signal: tileSignal } = tile;
-        const signal =
-          userSignal && tileSignal
-            ? AbortSignal.any([userSignal, tileSignal])
-            : (userSignal ?? tileSignal);
-        const options = {
-          device: this.context.device,
-          signal,
-        };
-        return tileFetchFn(tile, options);
-      },
-      renderSubLayers,
-      updateTriggers: {
-        getTileData: currentFrameId,
-        renderSubLayers: updateTriggers?.renderTile,
-      },
-      onViewportLoad: (loadedTiles: unknown[]) => {
-        if (visibleTileRef) {
-          const tiles = loadedTiles as Array<{
-            index: TileCoord;
-          }>;
-          visibleTileRef.tiles = tiles.map((t) => ({
-            x: t.index.x,
-            y: t.index.y,
-            z: t.index.z,
-          }));
-        }
-      },
-      tileSize,
-      zoomOffset,
-      maxZoom,
-      minZoom,
-      extent,
-      debounceTime,
-      maxCacheSize,
-      maxCacheByteSize,
-      maxRequests,
-      refinementStrategy,
-    });
   }
 }
