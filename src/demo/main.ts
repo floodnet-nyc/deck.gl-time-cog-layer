@@ -1,4 +1,6 @@
 import { Deck } from "@deck.gl/core";
+import { TileLayer } from "@deck.gl/geo-layers";
+import { BitmapLayer } from "@deck.gl/layers";
 import type { GetTileDataOptions, MinimalTileData } from "@developmentseed/deck.gl-geotiff";
 import { texture as geotiffTexture } from "@developmentseed/deck.gl-geotiff";
 import type { RenderTileResult } from "@developmentseed/deck.gl-raster";
@@ -12,6 +14,9 @@ import "../demo/style.css";
 
 const DISPLAY_OPACITY = 0.86;
 const PRECIP_MAX_RAW_VALUE = 200;
+const PLAY_SPEEDS = [0.5, 1, 2, 5, 10, 30].map((s) => s * 60);
+const DEFAULT_SPEED = 60;
+
 
 type PrecipTileData = MinimalTileData & {
   byteLength: number;
@@ -178,6 +183,12 @@ app.innerHTML = `
   <div id="deck"></div>
   <aside id="controls">
     <strong>TimeCOGLayer demo</strong>
+    <div id="playback">
+      <button id="play" type="button" title="Play / Pause">&#9654;</button>
+      <select id="speed">
+        ${PLAY_SPEEDS.map((s) => `<option value="${s}"${s === DEFAULT_SPEED ? " selected" : ""}>${s/60}min/s</option>`).join("")}
+      </select>
+    </div>
     <label>
       Frame
       <input id="frame" type="range" min="0" max="0" value="0" />
@@ -187,11 +198,13 @@ app.innerHTML = `
   </aside>
 `;
 
+const playButton = document.querySelector<HTMLButtonElement>("#play");
+const speedSelect = document.querySelector<HTMLSelectElement>("#speed");
 const frameInput = document.querySelector<HTMLInputElement>("#frame");
 const timeOutput = document.querySelector<HTMLOutputElement>("#time");
 const statsOutput = document.querySelector<HTMLOutputElement>("#stats");
 
-if (!frameInput || !timeOutput || !statsOutput) {
+if (!playButton || !speedSelect || !frameInput || !timeOutput || !statsOutput) {
   throw new Error("Missing demo controls");
 }
 
@@ -216,6 +229,14 @@ let selectedFrame = catalog[0] as NormalizedTimeCOGFrame | undefined;
 
 frameInput.max = String(Math.max(0, catalog.length - 1));
 
+const timeSpan = catalog.length > 1 ? catalog[catalog.length - 1].timeMs - catalog[0].timeMs : 0;
+
+let playing = false;
+let playbackRate = DEFAULT_SPEED;
+let lastFrameTime: number | null = null;
+let lastFrameIndex = 0;
+let animFrameId: number | null = null;
+
 const deck = new Deck({
   parent: document.querySelector<HTMLDivElement>("#deck") ?? undefined,
   initialViewState: {
@@ -237,20 +258,39 @@ function render(): void {
   timeOutput.value = new Date(selectedFrame.timeMs).toISOString();
   deck.setProps({
     layers: [
+      new TileLayer({
+        id: "basemap",
+        data: "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        tileSize: 256,
+        minZoom: 0,
+        maxZoom: 19,
+        renderSubLayers: (props) => {
+          const {
+            bbox: { west, south, east, north },
+          } = props.tile;
+          return new BitmapLayer(props, {
+            data: null,
+            image: props.data as string,
+            bounds: [west, south, east, north],
+          });
+        },
+      }),
       new TimeCOGLayer({
         id: "time-cog-layer-demo",
         frames,
         currentTime: selectedFrame.timeMs,
+        playing,
+        playbackRate,
         getTileData: getPrecipTileData,
         renderTile: renderPrecipTile,
         opacity: DISPLAY_OPACITY,
         missingFramePolicy: "nearest",
         bufferPolicy: {
-          backwardFrames: 1,
-          forwardFrames: 3,
+          // backwardFrames: 1,
+          // forwardFrames: 3,
         },
         cachePolicy: {
-          maxFrames: 12,
+          // maxFrames: 12,
         },
         onStats: (stats) => {
           statsOutput.value = `${stats.readyFrameCount}/${stats.frameCount} ready, ${stats.scheduledFrameCount} scheduled`;
@@ -259,6 +299,99 @@ function render(): void {
     ],
   });
 }
+
+function updateSliderFromTime(timeMs: number): void {
+  let sliderIndex = 0;
+  for (let i = 0; i < catalog.length; i += 1) {
+    if (catalog[i].timeMs <= timeMs) {
+      sliderIndex = i;
+    } else {
+      break;
+    }
+  }
+  frameInput.value = String(sliderIndex);
+}
+
+function startPlayback(): void {
+  playing = true;
+  lastFrameTime = null;
+  playButton.innerHTML = "&#9646;&#9646;";
+  render();
+
+  function tick(now: number): void {
+    if (!playing) return;
+
+    if (lastFrameTime !== null) {
+      const deltaMs = now - lastFrameTime;
+      const advanceMs = deltaMs * playbackRate;
+
+      if (selectedFrame) {
+        let newTimeMs = selectedFrame.timeMs + advanceMs;
+
+        if (newTimeMs >= catalog[catalog.length - 1].timeMs) {
+          newTimeMs = catalog[0].timeMs;
+        } else if (newTimeMs < catalog[0].timeMs) {
+          newTimeMs = catalog[catalog.length - 1].timeMs;
+        }
+
+        const nearestIndex = findNearestFrameIndex(newTimeMs);
+        selectedFrame = catalog[nearestIndex];
+        if (nearestIndex !== lastFrameIndex) {
+          console.log(`Advancing to frame ${nearestIndex} at time ${new Date(selectedFrame.timeMs).toISOString()}`);
+          updateSliderFromTime(newTimeMs);
+          render();
+          lastFrameTime = now;
+        }
+        lastFrameIndex = nearestIndex;
+      }
+    }
+    else {
+      lastFrameTime = now;
+    }
+    animFrameId = requestAnimationFrame(tick);
+  }
+
+  animFrameId = requestAnimationFrame(tick);
+}
+
+function stopPlayback(): void {
+  playing = false;
+  playButton.innerHTML = "&#9654;";
+  if (animFrameId !== null) {
+    cancelAnimationFrame(animFrameId);
+    animFrameId = null;
+  }
+  render();
+}
+
+function findNearestFrameIndex(timeMs: number): number {
+  let best = 0;
+  let bestDiff = Math.abs(catalog[0].timeMs - timeMs);
+  for (let i = 1; i < catalog.length; i += 1) {
+    const diff = Math.abs(catalog[i].timeMs - timeMs);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = i;
+    }
+  }
+  return best;
+}
+
+playButton.addEventListener("click", () => {
+  if (playing) {
+    stopPlayback();
+  } else {
+    startPlayback();
+  }
+});
+
+speedSelect.addEventListener("change", () => {
+  playbackRate = Number(speedSelect.value);
+  if (playing) {
+    lastFrameTime = null;
+    render();
+  }
+});
 
 frameInput.addEventListener("input", () => {
   selectedFrame = catalog[Number(frameInput.value)];

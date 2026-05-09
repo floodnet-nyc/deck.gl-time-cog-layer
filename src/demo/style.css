@@ -39,6 +39,47 @@ input {
   width: 100%;
 }
 
+#playback {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+#play {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid rgba(16, 24, 32, 0.2);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+#play:hover {
+  background: #f0f0f5;
+}
+
+#speed {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid rgba(16, 24, 32, 0.2);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+#speed:hover {
+  background: #f0f0f5;
+}
+
 output {
   font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: #394957;
