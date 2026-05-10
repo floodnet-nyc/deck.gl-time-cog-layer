@@ -11,9 +11,9 @@ import {
   normalizeFrameCatalog,
   parseTimeValue,
   resolveFrameForTime,
-} from "./frame-catalog.js";
+} from "./util/frame-catalog.js";
 import { FramePrefetcher } from "./frame-prefetcher.js";
-import { scheduleFrameWindow } from "./frame-scheduler.js";
+import { scheduleFrameWindow } from "./util/frame-scheduler.js";
 import { SequenceTileCache } from "./sequence-tile-cache.js";
 import {
   TimeSequenceTileLayer,

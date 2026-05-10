@@ -5,9 +5,9 @@ export {
   normalizeFrameCatalog,
   parseTimeValue,
   resolveFrameForTime,
-} from "./frame-catalog.js";
+} from "./util/frame-catalog.js";
 export { FramePrefetcher } from "./frame-prefetcher.js";
-export { scheduleFrameWindow } from "./frame-scheduler.js";
+export { scheduleFrameWindow } from "./util/frame-scheduler.js";
 export type { CachedTile, TileCachePolicy, TileCacheStats, TileQuality } from "./sequence-tile-cache.js";
 export { SequenceTileCache } from "./sequence-tile-cache.js";
 export {
@@ -15,10 +15,10 @@ export {
   imageForZ,
   isMissingTileError,
   mapToCoarserZoom,
-} from "./tile-utils.js";
+} from "./util/tile-utils.js";
 export { TimeCOGLayer } from "./time-cog-layer.js";
-export type { TileDiagSnapshot } from "./tile-diagnostics.js";
-export { renderTileDiagnostics } from "./tile-diagnostics.js";
+export type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
+export { renderTileDiagnostics } from "./util/tile-diagnostics.js";
 export type {
   DescriptorManifest,
   DescriptorMode,

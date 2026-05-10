@@ -1,7 +1,7 @@
 import type {
   NormalizedTimeCOGFrame,
   TimeCOGBufferPolicy,
-} from "./types.js";
+} from "../types.js";
 
 export type ScheduledFrame = {
   frame: NormalizedTimeCOGFrame;

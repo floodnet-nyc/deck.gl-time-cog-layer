@@ -4,7 +4,7 @@ import type {
   TimeCOGFrame,
   TimeCOGFrameResolution,
   TimeValue,
-} from "./types.js";
+} from "../types.js";
 
 /** SAS tokens and other volatile auth params that should be stripped from cache keys. */
 const VOLATILE_QUERY_PARAMS = new Set([

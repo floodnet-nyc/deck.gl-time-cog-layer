@@ -1,4 +1,4 @@
-import type { SequenceTileCache } from "./sequence-tile-cache.js";
+import type { SequenceTileCache } from "../sequence-tile-cache.js";
 
 /**
  * Snapshot of tile state consumed by {@link renderTileDiagnostics}.

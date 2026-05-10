@@ -5,9 +5,9 @@ import type {
   DecoderPool,
 } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
-import { openGeoTIFF } from "./geotiff-source.js";
+import { openGeoTIFF } from "./util/geotiff-source.js";
 import type { SequenceTileCache, TileQuality } from "./sequence-tile-cache.js";
-import { hasTile, imageForZ, isMissingTileError } from "./tile-utils.js";
+import { hasTile, imageForZ, isMissingTileError } from "./util/tile-utils.js";
 import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWeights } from "./types.js";
 
 type TileCoord = { x: number; y: number; z: number };
