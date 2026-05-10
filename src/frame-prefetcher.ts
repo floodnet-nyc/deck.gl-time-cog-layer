@@ -413,11 +413,7 @@ export class FramePrefetcher {
         this.geotiffs.set(task.frameId, geotiff);
       }
 
-      let image = imageForZ(geotiff, task.z - task.bias);
-
-      if (!image || !hasTile(image, task.x, task.y)) {
-        image = imageForZ(geotiff, task.z);
-      }
+      const image = imageForZ(geotiff, task.z);
 
       if (!image || !hasTile(image, task.x, task.y)) {
         return;
@@ -455,7 +451,7 @@ export class FramePrefetcher {
           byteLength: result.byteLength ?? 0,
           width: result.width,
           height: result.height,
-          quality: task.quality,
+          quality: "full",
         });
 
         if (elapsed > 0 && result.byteLength) {

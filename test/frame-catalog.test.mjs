@@ -14,6 +14,7 @@ import {
   resolveFrameForTime,
   scheduleFrameWindow,
 } from "../dist/index.js";
+import { TimeSequenceTileLayer } from "../dist/time-sequence-tile-layer.js";
 
 const frames = [
   { time: "2025-10-30T00:04:00Z", url: "https://example.test/004.tif?sig=drop&x=keep" },
@@ -266,6 +267,72 @@ test("frame prefetcher suppresses expected missing COG tile warnings", async () 
   assert.deepEqual(warnings, []);
 });
 
+test("frame prefetcher keeps preview requests on the exact tile grid", async () => {
+  const cache = new SequenceTileCache();
+  const prefetcher = new FramePrefetcher(cache, 1);
+  const targetFrame = {
+    id: "target",
+    time: 0,
+    timeMs: 0,
+    url: "https://example.test/target.tif",
+    cacheKey: "target",
+    sourceIndex: 0,
+  };
+  const nextFrame = {
+    id: "next",
+    time: 1,
+    timeMs: 1,
+    url: "https://example.test/next.tif",
+    cacheKey: "next",
+    sourceIndex: 1,
+  };
+  const coarse = { id: "coarse", tileCount: { x: 4, y: 4 } };
+  const geotiff = {
+    overviews: [coarse],
+    tileCount: { x: 8, y: 8 },
+  };
+  const requests = [];
+
+  prefetcher.geotiffs.set(nextFrame.id, geotiff);
+
+  prefetcher.update({
+    targetFrame,
+    scheduledFrames: [targetFrame, nextFrame],
+    visibleTiles: [{ x: 4, y: 6, z: 1 }],
+    device: {},
+    getUserTileData: async (image, options) => {
+      requests.push({
+        imageId: image.id,
+        x: options.x,
+        y: options.y,
+        rasterValue: options.x * 1000 + options.y,
+      });
+
+      return {
+        texture: { destroy() {} },
+        byteLength: 1,
+        width: 1,
+        height: 1,
+      };
+    },
+    pool: {},
+    playing: false,
+    playbackRate: 0,
+    interactionMode: "seeking",
+    qualityPolicy: { previewOverviewBias: 1 },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(requests, [
+    { imageId: undefined, x: 4, y: 6, rasterValue: 4006 },
+  ]);
+
+  const cached = cache.get(nextFrame.id, 4, 6, 1);
+  assert.ok(cached);
+  assert.equal(cached.quality, "full");
+});
+
 // ─── Phase 1: progressive loading, onFrameReady, descriptor validation ───
 
 test("mapToCoarserZoom halves coordinates at bias 1", () => {
@@ -282,6 +349,59 @@ test("mapToCoarserZoom clamps z at bias exceeding zoom", () => {
 
 test("mapToCoarserZoom returns identity at bias 0", () => {
   assert.deepEqual(mapToCoarserZoom(5, 5, 5, 0), { x: 5, y: 5, z: 5 });
+});
+
+test("time sequence tile layer keeps preview requests on the exact tile grid", async () => {
+  const cache = new SequenceTileCache();
+  const coarse = { id: "coarse", tileCount: { x: 4, y: 4 } };
+  const geotiff = {
+    overviews: [coarse],
+    tileCount: { x: 8, y: 8 },
+  };
+  const requests = [];
+
+  const layer = Object.create(TimeSequenceTileLayer.prototype);
+  layer.props = {
+    sequenceTileCache: cache,
+    currentFrameId: "frame-1",
+    currentFrameUrl: "https://example.test/frame-1.tif",
+    previewBias: 1,
+    visibleTileRef: { tiles: [] },
+    pool: {},
+    getTileData: async (image, options) => {
+      requests.push({
+        imageId: image.id,
+        x: options.x,
+        y: options.y,
+      });
+      return {
+        texture: { destroy() {} },
+        byteLength: 1,
+        width: 1,
+        height: 1,
+        rasterValue: options.x * 1000 + options.y,
+      };
+    },
+  };
+  layer.state = {
+    geotiffByUrl: new Map([["frame-1", geotiff]]),
+  };
+  layer.context = {
+    device: {},
+  };
+
+  const getTileData = TimeSequenceTileLayer.prototype._getTileDataCallback.call(layer);
+  const result = await getTileData(
+    { index: { x: 4, y: 6, z: 1 } },
+    { device: {}, signal: undefined },
+  );
+
+  assert.deepEqual(requests, [{ imageId: undefined, x: 4, y: 6 }]);
+  assert.equal(result.rasterValue, 4006);
+
+  const cached = cache.get("frame-1", 4, 6, 1);
+  assert.ok(cached);
+  assert.equal(cached.quality, "full");
 });
 
 test("SequenceTileCache.getBest returns exact match on first try", () => {

@@ -79,11 +79,13 @@ const TIME_SEQ_TILE_LAYER_NAME = "TimeSequenceTileLayer";
  * cache-aware fetcher with progressive-loading support:
  *
  * 1. Check the shared `SequenceTileCache` for the tile at `(x, y, z)`.
- * 2. On miss, select a coarser COG overview level via
- *    `imageForZ(geotiff, z - bias)` (keeping the same `(x, y)`
- *    coordinates — the tileset descriptor already mapped viewport
- *    space to COG tile coords).  Fall back to `imageForZ(geotiff, z)`
- *    if the biased overview has no tile at those coordinates.
+ * 2. On miss, load the exact COG tile for the current `(x, y, z)`.
+ *
+ * Overview-biased preview reads are intentionally disabled here. The
+ * current raster renderer assumes that each tile's pixels already
+ * correspond to the current tile's spatial footprint. Substituting a
+ * coarser overview tile violates that assumption and produces
+ * misregistered preview imagery.
  * 3. Store the result under the original key `(frameId, x, y, z)`
  *    with quality `"preview"` or `"full"`.
  *
@@ -257,7 +259,7 @@ export class TimeSequenceTileLayer<
       options: { device: Device; signal?: AbortSignal },
     ) => {
       const seqProps = this.props as TimeSequenceTileLayerProps;
-      const { currentFrameId, currentFrameUrl, currentFrameRequestInit, previewBias } = seqProps;
+      const { currentFrameId, currentFrameUrl, currentFrameRequestInit } = seqProps;
       const { x, y, z } = tile.index;
 
       const hit = tileCache.get(currentFrameId, x, y, z);
@@ -275,9 +277,6 @@ export class TimeSequenceTileLayer<
       }
 
       tileCache.recordMiss();
-
-      const bias = previewBias ?? 0;
-      let quality: TileQuality = bias > 0 ? "preview" : "full";
 
       const geotiffByUrl =
         this.state.geotiffByUrl ?? new Map<string, GeoTIFF>();
@@ -300,12 +299,8 @@ export class TimeSequenceTileLayer<
         this.setState({ geotiffByUrl });
       }
 
-      let image = imageForZ(geotiff, z - bias);
-
-      if (!image || !hasTile(image, x, y)) {
-        image = imageForZ(geotiff, z);
-        quality = "full";
-      }
+      const image = imageForZ(geotiff, z);
+      const quality: TileQuality = "full";
 
       if (!image || !hasTile(image, x, y)) {
         return null as DataT;
