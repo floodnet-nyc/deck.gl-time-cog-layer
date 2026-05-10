@@ -16,14 +16,15 @@ import { scheduleFrameWindow } from "./util/frame-scheduler.js";
 import { SequenceTileCache } from "./sequence-tile-cache.js";
 import { TimeSequenceTileLayer } from "./time-sequence-tile-layer.js";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
+import { detectInteractionMode } from "./util/interaction-mode.js";
+import { computeCoverage, computeBufferState } from "./util/frame-coverage.js";
+import { buildBufferState, buildStats } from "./util/stats-collector.js";
+import { extractCOGLayerProps } from "./util/cog-prop-keys.js";
 import type {
-  InteractionMode,
   NormalizedTimeCOGFrame,
   QualityPolicy,
-  TimeCOGBufferState,
   TimeCOGLayerProps,
   TimeCOGLayerState,
-  TimeCOGStats,
 } from "./types.js";
 import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
 
@@ -283,9 +284,10 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       });
     }
 
-    const interactionMode = this.detectInteractionMode(
+    const interactionMode = detectInteractionMode(
       playing,
       state.lastInteractionMs,
+      this.props.qualityPolicy?.fullResUpgradeIdleMs,
     );
 
     if (state.upgradeTimer) {
@@ -371,36 +373,6 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     });
   }
 
-  /** Derive the interaction mode from playback state and recency of timing changes. */
-  private detectInteractionMode(
-    playing: boolean,
-    lastInteractionMs: number,
-  ): InteractionMode {
-    if (playing) {
-      return "playing";
-    }
-
-    if (lastInteractionMs === 0) {
-      return "idle";
-    }
-
-    const elapsed = Date.now() - lastInteractionMs;
-
-    if (elapsed < 80) {
-      return "scrubbing";
-    }
-
-    if (elapsed < 200) {
-      return "seeking";
-    }
-
-    if (elapsed >= (this.props.qualityPolicy?.fullResUpgradeIdleMs ?? 300)) {
-      return "idle";
-    }
-
-    return "seeking";
-  }
-
   /** Fire `onFrameReady` if the display frame achieves full tile coverage for the first time. */
   private checkFrameReady(frame: NormalizedTimeCOGFrame): void {
     const state = this.state;
@@ -418,92 +390,6 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       state.readyFrameIds.add(frame.id);
       this.props.onFrameReady?.(frame);
     }
-  }
-
-  /** Compute the fraction of visible tiles cached at full quality for a frame (0-1). */
-  private computeCoverage(frame: NormalizedTimeCOGFrame | null): number {
-    const state = this.state;
-
-    if (!frame) {
-      return 1;
-    }
-
-    const tiles = state.visibleTileRef.tiles;
-
-    if (tiles.length === 0) {
-      return 1;
-    }
-
-    let cached = 0;
-
-    for (const t of tiles) {
-      const entry = state.tileCache.get(frame.id, t.x, t.y, t.z);
-
-      if (entry && entry.quality === "full") {
-        cached += 1;
-      }
-    }
-
-    return cached / tiles.length;
-  }
-
-  /**
-   * Compute how many contiguous frames ahead of and behind the
-   * playhead have full tile coverage.
-   *
-   * Uses {@link SequenceTileCache.hasFullCoverage} per frame so a
-   * frame only counts as buffered when all of its visible tiles are
-   * cached at full resolution — not just any single tile.
-   *
-   * Used by the prefetcher's buffer-shortfall scoring to boost
-   * forward-frame tasks when the ahead-of-playhead buffer is
-   * underfilled.
-   */
-  private computeBufferState(
-    displayFrame: NormalizedTimeCOGFrame | null,
-    scheduledFrames: NormalizedTimeCOGFrame[],
-  ): { bufferedAhead: number; bufferedBehind: number; targetAhead: number } {
-    const state = this.state;
-    const tiles = state.visibleTileRef.tiles;
-
-    let bufferedAhead = 0;
-    let bufferedBehind = 0;
-
-    if (tiles.length > 0 && displayFrame) {
-      // Sort by time so forward/backward walks are in temporal order, not
-      // priority order (scheduledFrames is priority-sorted, which interleaves
-      // forward and backward frames and would cause premature loop breaks).
-      const byTime = [...scheduledFrames].sort((a, b) => a.timeMs - b.timeMs);
-      const idx = byTime.findIndex((f) => f.id === displayFrame.id);
-
-      if (idx >= 0) {
-        for (let i = idx + 1; i < byTime.length; i += 1) {
-          const f = byTime[i];
-
-          if (f && state.tileCache.hasFullCoverage(f.id, tiles)) {
-            bufferedAhead += 1;
-          } else {
-            break;
-          }
-        }
-
-        for (let i = idx - 1; i >= 0; i -= 1) {
-          const f = byTime[i];
-
-          if (f && state.tileCache.hasFullCoverage(f.id, tiles)) {
-            bufferedBehind += 1;
-          } else {
-            break;
-          }
-        }
-      }
-    }
-
-    return {
-      bufferedAhead,
-      bufferedBehind,
-      targetAhead: this.props.bufferPolicy?.forwardFrames ?? 6,
-    };
   }
 
   private applyMaxFrameRateBucking(
@@ -548,37 +434,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   }
 
   private emitState(s: TimeCOGLayerState): void {
-    const tileStats = s.tileCache.stats();
-    const prefetchStats = s.prefetcher.stats();
-    const totalAccesses = tileStats.hitCount + tileStats.missCount;
-
-    const bufferState: TimeCOGBufferState = {
-      targetFrame: s.targetFrame,
-      displayFrame: s.displayFrame,
-      scheduledFrameIds: s.scheduledFrames.map((f) => f.id),
-      readyFrameIds: tileStats.frameIds,
-      missing: s.missing,
-    };
-    const stats: TimeCOGStats = {
-      frameCount: s.catalog.length,
-      readyFrameCount: tileStats.frameIds.length,
-      cacheEntryCount: tileStats.tileCount,
-      scheduledFrameCount: s.scheduledFrames.length,
-      currentTimeMs: s.currentTimeMs,
-      targetFrameId: s.targetFrame?.id ?? null,
-      displayFrameId: s.displayFrame?.id ?? null,
-      prefetchTaskCount: prefetchStats.prefetchTaskCount,
-      rttEWMA: prefetchStats.rttEWMA,
-      throughputEWMA: prefetchStats.throughputEWMA,
-      abortRate: prefetchStats.abortRate,
-      cacheHitRate: totalAccesses > 0 ? tileStats.hitCount / totalAccesses : 0,
-      wastedBytes: tileStats.wastedBytes,
-      evictedNeverDisplayed: tileStats.evictedNeverDisplayed,
-      evictedTotal: tileStats.evictedTotal,
-    };
-
-    this.props.onBufferStateChange?.(bufferState);
-    this.props.onStats?.(stats);
+    this.props.onBufferStateChange?.(buildBufferState(s.tileCache, s));
+    this.props.onStats?.(buildStats(s.tileCache, s.prefetcher, s));
   }
 
   private updatePrefetch(snapshot?: {
@@ -599,11 +456,18 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
     const pool = this.props.pool ?? defaultDecoderPool();
 
-    const coverage = this.computeCoverage(displayFrame);
+    const coverage = computeCoverage(
+      state.tileCache,
+      displayFrame,
+      state.visibleTileRef.tiles,
+    );
 
-    const bufferState = this.computeBufferState(
+    const bufferState = computeBufferState(
+      state.tileCache,
       displayFrame,
       scheduledFrames,
+      state.visibleTileRef.tiles,
+      this.props.bufferPolicy?.forwardFrames ?? 6,
     );
 
     state.prefetcher.update({
@@ -629,53 +493,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
   private cogLayerProps(
     frame: NormalizedTimeCOGFrame,
-  ): Omit<
-    TimeCOGLayerProps,
-    | "id"
-    | "frames"
-    | "currentTime"
-    | "playing"
-    | "playbackRate"
-    | "missingFramePolicy"
-    | "bufferPolicy"
-    | "cachePolicy"
-    | "qualityPolicy"
-    | "schedulerPolicy"
-    | "descriptorMode"
-    | "descriptorManifest"
-    | "onFrameReady"
-    | "onFrameDisplayed"
-    | "onMissingFrame"
-    | "onDescriptorMismatch"
-    | "onBufferStateChange"
-    | "onStats"
-    | "onGeoTIFFLoad"
-    | "getTileData"
-    | "renderTile"
-  > {
-    const {
-      frames: _frames,
-      currentTime: _currentTime,
-      playing: _playing,
-      playbackRate: _playbackRate,
-      missingFramePolicy: _missingFramePolicy,
-      bufferPolicy: _bufferPolicy,
-      cachePolicy: _cachePolicy,
-      qualityPolicy: _qualityPolicy,
-      schedulerPolicy: _schedulerPolicy,
-      descriptorMode: _descriptorMode,
-      descriptorManifest: _descriptorManifest,
-      onFrameReady: _onFrameReady,
-      onFrameDisplayed: _onFrameDisplayed,
-      onMissingFrame: _onMissingFrame,
-      onDescriptorMismatch: _onDescriptorMismatch,
-      onBufferStateChange: _onBufferStateChange,
-      onStats: _onStats,
-      onGeoTIFFLoad: _onGeoTIFFLoad,
-      getTileData: _getTileData,
-      renderTile: _renderTile,
-      ...cogProps
-    } = this.props;
+  ): ReturnType<typeof extractCOGLayerProps<TimeCOGLayerProps>> {
+    const cogProps = extractCOGLayerProps(this.props);
 
     if (!frame.requestInit) {
       return cogProps;
