@@ -3,10 +3,8 @@ import type {
   LayersList,
   UpdateParameters,
 } from "@deck.gl/core";
-import type { Texture, Device } from "@luma.gl/core";
 import { CompositeLayer } from "@deck.gl/core";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
-import type { DecoderPool, GeoTIFF, Overview } from "@developmentseed/geotiff";
 import {
   findNearestFrameIndex,
   normalizeFrameCatalog,
@@ -16,103 +14,18 @@ import {
 import { FramePrefetcher } from "./frame-prefetcher.js";
 import { scheduleFrameWindow } from "./util/frame-scheduler.js";
 import { SequenceTileCache } from "./sequence-tile-cache.js";
-import {
-  TimeSequenceTileLayer,
-} from "./time-sequence-tile-layer.js";
+import { TimeSequenceTileLayer } from "./time-sequence-tile-layer.js";
 import type {
+  DiagnosticSnapshot,
   InteractionMode,
   NormalizedTimeCOGFrame,
   QualityPolicy,
   TimeCOGBufferState,
   TimeCOGLayerProps,
+  TimeCOGLayerState,
   TimeCOGStats,
 } from "./types.js";
 
-type TileCoord = { x: number; y: number; z: number };
-
-/**
- * Internal state for {@link TimeCOGLayer}.
- *
- * The state is intentionally flat so that deck.gl can shallow-diff it
- * efficiently across the render / update cycle.  The three “shared
- * infrastructure” fields — `tileCache`, `prefetcher`, and
- * `visibleTileRef` — are created once in `initializeState` and live
- * for the full lifetime of the layer.  The sublayer
- * (`TimeSequenceTileLayer`) reads from them via props, so they must
- * remain the **same object** across renders.
- */
-type TimeCOGLayerState = {
-  /** Full ordered catalog of every frame (time → URL).  Never mutated, only replaced when `frames` prop changes. */
-  catalog: NormalizedTimeCOGFrame[];
-
-  /**
-   * The shared GPU / CPU tile cache.
-   * Stores decoded textures keyed by `(frameId, tileX, tileY, zoom)`.
-   * Both the sublayer (`_getTileDataCallback`) and the
-   * `FramePrefetcher` read from and write to this cache, which is why
-   * it lives on the parent composite layer.
-   */
-  tileCache: SequenceTileCache;
-
-  /**
-   * Background prefetch pipeline.
-   * On every `updateState` it receives the current playback snapshot
-   * (target frame, scheduled frames, visible tiles, device, etc.) and
-   * proactively fetches tiles for nearby frames.
-   */
-  prefetcher: FramePrefetcher;
-
-  /**
-   * Shared mutable reference that the inner TileLayer updates via its
-   * `onViewportLoad` callback.  The parent layer reads this on each
-   * `updateState` to feed the prefetcher.
-   */
-  visibleTileRef: { tiles: TileCoord[] };
-
-  /**
-   * The GeoTIFF URL of the very first displayed frame.
-   * This URL is passed as the `geotiff` prop to the persistent
-   * `COGLayer` sublayer so that the shared tileset descriptor is
-   * parsed **once** and reused for the lifetime of the layer.
-   * Changing the `geotiff` URL would cause COGLayer to re-parse the
-   * header, tearing down the descriptor and inner TileLayer.
-   */
-  initialGeotiffUrl: string;
-
-  /** The current playback time, as a millisecond epoch. */
-  currentTimeMs: number;
-
-  /** The frame closest to `currentTimeMs` in the catalog. */
-  targetFrame: NormalizedTimeCOGFrame | null;
-
-  /**
-   * The frame that is actually visible on screen.
-   * May differ from `targetFrame` when the configured
-   * `missingFramePolicy` resolves to a fallback (e.g. `hold-last`).
-   */
-  displayFrame: NormalizedTimeCOGFrame | null;
-
-  /** Frames selected for prefetching, sorted by priority (target first). */
-  scheduledFrames: NormalizedTimeCOGFrame[];
-
-  /** True when the requested time has no exact match in the catalog. */
-  missing: boolean;
-
-  /** Tracks the most recently displayed frame so that `onFrameDisplayed` only fires on transitions. */
-  lastDisplayedFrameId: string | null;
-
-  /** Detected playback interaction state, derived from prop change frequency. */
-  interactionMode: InteractionMode;
-
-  /** `Date.now()` of the last user-triggered timing change (seek / scrub). */
-  lastInteractionMs: number;
-
-  /** Timer that fires `fullResUpgradeIdleMs` after the last interaction to trigger full-res upgrades. */
-  upgradeTimer: ReturnType<typeof setTimeout> | null;
-
-  /** Frame IDs that have already fired `onFrameReady` to avoid duplicate signals. */
-  readyFrameIds: Set<string>;
-};
 
 const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
 
@@ -253,9 +166,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       return null;
     }
 
-    const initialUrl =
-      state.initialGeotiffUrl || frame.url;
-
+    const initialUrl = state.initialGeotiffUrl || frame.url;
     const passThrough = this.cogLayerProps(frame);
     const qualityPolicy = this.props.qualityPolicy ?? {};
     const bias =
@@ -266,45 +177,26 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
           : 0;
 
     const userGeoTiff = this.props.onGeoTIFFLoad;
-    const wrappedGeoTiff = userGeoTiff
-      ? (...args: Parameters<typeof userGeoTiff>) => {
-          userGeoTiff(...args);
-        }
-      : undefined;
+    let onGeoTIFFLoad = userGeoTiff;
 
     if (this.props.descriptorMode === "manifest" && this.props.descriptorManifest) {
       const manifest = this.props.descriptorManifest;
 
-      return new TimeSequenceTileLayer({
-        ...passThrough,
-        id: `${this.props.id}-tiles`,
-        geotiff: initialUrl,
-        getTileData: this.props.getTileData,
-        renderTile: this.props.renderTile,
-        sequenceTileCache: state.tileCache,
-        currentFrameId: frame.id,
-        currentFrameUrl: frame.url,
-        currentFrameRequestInit: frame.requestInit,
-        previewBias: bias,
-        visibleTileRef: state.visibleTileRef,
-        onVisibleTilesChange: () => this.updatePrefetch(),
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        onGeoTIFFLoad: ((geotiff: any, options: any) => {
-          if (geotiff) {
-            const mismatches: string[] = [];
+      onGeoTIFFLoad = (geotiff: any, options: any) => {
+        if (geotiff) {
+          const mismatches: string[] = [];
 
-            if (geotiff.overviews.length + 1 !== manifest.overviewCount) {
-              mismatches.push(`overviewCount: expected ${manifest.overviewCount}, got ${geotiff.overviews.length + 1}`);
-            }
-
-            if (mismatches.length > 0) {
-              this.props.onDescriptorMismatch?.(frame, mismatches.join("; "));
-            }
+          if (geotiff.overviews.length + 1 !== manifest.overviewCount) {
+            mismatches.push(`overviewCount: expected ${manifest.overviewCount}, got ${geotiff.overviews.length + 1}`);
           }
 
-          userGeoTiff?.(geotiff, options);
-        }) as never,
-      } as object);
+          if (mismatches.length > 0) {
+            this.props.onDescriptorMismatch?.(frame, mismatches.join("; "));
+          }
+        }
+
+        userGeoTiff?.(geotiff, options);
+      }
     }
 
     return new TimeSequenceTileLayer({
@@ -320,7 +212,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       previewBias: bias,
       visibleTileRef: state.visibleTileRef,
       onVisibleTilesChange: () => this.updatePrefetch(),
-      ...(wrappedGeoTiff ? { onGeoTIFFLoad: wrappedGeoTiff } : {}),
+      onGeoTIFFLoad: onGeoTIFFLoad ?? undefined,
     } as object);
   }
 
@@ -361,6 +253,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       this.props.missingFramePolicy ?? DEFAULT_MISSING_FRAME_POLICY,
     );
 
+    // TODO: move this to function
     if (
       resolution.displayFrame &&
       (this.props.maxFrameRate ?? 0) > 0 &&
@@ -531,7 +424,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     }
   }
 
-  /** Compute the fraction of visible tiles cached at full quality for a frame (0–1). */
+  /** Compute the fraction of visible tiles cached at full quality for a frame (0-1). */
   private computeCoverage(frame: NormalizedTimeCOGFrame | null): number {
     const state = this.state;
 
@@ -663,10 +556,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       return;
     }
 
-    const pool =
-      (
-        this.props as unknown as { pool?: DecoderPool }
-      ).pool ?? defaultDecoderPool();
+    const pool = this.props.pool ?? defaultDecoderPool();
 
     const coverage = this.computeCoverage(displayFrame);
 
@@ -683,22 +573,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       coverage,
       bufferState,
       scoringWeights: this.props.schedulerPolicy?.scoringWeights,
-      getUserTileData: this.props.getTileData as (
-        image: GeoTIFF | Overview,
-        options: {
-          device: Device;
-          x: number;
-          y: number;
-          signal?: AbortSignal;
-          pool: DecoderPool;
-        },
-      ) => Promise<{
-        texture: Texture;
-        mask?: Texture;
-        byteLength: number;
-        width: number;
-        height: number;
-      }>,
+      getUserTileData: this.props.getTileData,
       pool,
       playing: this.props.playing ?? false,
       playbackRate: this.props.playbackRate ?? 0,
@@ -761,7 +636,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     } = this.props;
 
     if (!frame.requestInit) {
-      return cogProps as ReturnType<typeof this.cogLayerProps>;
+      return cogProps;
     }
 
     return {
@@ -773,7 +648,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
           ...frame.requestInit,
         },
       },
-    } as ReturnType<typeof this.cogLayerProps>;
+    };
   }
 
   /**
@@ -783,29 +658,16 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
    * @param windowSize - Number of frame columns to include in the
    *   window, centered on the playhead (default 60).
    */
-  getDiagnosticSnapshot(windowSize = 60): {
-    tileCache: SequenceTileCache;
-    visibleTiles: { x: number; y: number; z: number }[];
-    frameIds: string[];
-    allFrameIds: string[];
-    playheadIndex: number;
-    maxZoom: number;
-    tileGrid: Record<number, { maxX: number; maxY: number }>;
-    wastedBytes: number;
-    evictedNeverDisplayed: number;
-    abortedTasks: number;
-    scheduledFrameIds: Set<string>;
-    inFlightKeys: Set<string>;
-    abortedKeys: Set<string>;
-  } {
-    const empty = {
+  // TODO: move to type
+  getDiagnosticSnapshot(windowSize = 60): DiagnosticSnapshot {
+    const empty: DiagnosticSnapshot = {
       tileCache: new SequenceTileCache(),
-      visibleTiles: [] as { x: number; y: number; z: number }[],
-      frameIds: [] as string[],
-      allFrameIds: [] as string[],
+      visibleTiles: [],
+      frameIds: [],
+      allFrameIds: [],
       playheadIndex: 0,
       maxZoom: 0,
-      tileGrid: {} as Record<number, { maxX: number; maxY: number }>,
+      tileGrid: {},
       wastedBytes: 0,
       evictedNeverDisplayed: 0,
       abortedTasks: 0,

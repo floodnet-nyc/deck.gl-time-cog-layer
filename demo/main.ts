@@ -115,7 +115,7 @@ async function getPrecipTileData(
   }
 
   const data = array.data as Uint8Array | Uint16Array;
-  const format = geotiffTexture.inferTextureFormat(1, [16], [1]);
+  const format = geotiffTexture.inferTextureFormat(1, new Uint16Array([16]), [1]);
   const texture = device.createTexture({
     format,
     width,
@@ -188,20 +188,18 @@ if (!app) {
 app.innerHTML = `
   <div id="deck"></div>
   <aside id="controls">
-    <strong>TimeCOGLayer demo</strong>
     <div id="playback">
       <button id="play" type="button" title="Play / Pause">&#9654;</button>
       <select id="speed">
         ${PLAY_SPEEDS.map((s) => `<option value="${s}"${s === DEFAULT_SPEED ? " selected" : ""}>${s/60}min/s</option>`).join("")}
       </select>
+      <output id="stats"></output>
+      <output id="time"></output>
     </div>
     <label>
-      Frame
       <input id="frame" type="range" min="0" max="0" value="0" />
     </label>
-    <output id="time"></output>
-    <output id="stats"></output>
-    <canvas id="diagnostics" width="480" height="200"></canvas>
+    <canvas id="diagnostics" width="480" height="150"></canvas>
   </aside>
 `;
 
@@ -237,7 +235,7 @@ let selectedFrame = catalog[0] as NormalizedTimeCOGFrame | undefined;
 
 frameInput.max = String(Math.max(0, catalog.length - 1));
 
-const timeSpan = catalog.length > 1 ? catalog[catalog.length - 1].timeMs - catalog[0].timeMs : 0;
+// const timeSpan = catalog.length > 1 ? catalog[catalog.length - 1].timeMs - catalog[0].timeMs : 0;
 
 let playing = false;
 let playbackRate = DEFAULT_SPEED;
@@ -281,7 +279,7 @@ function render(): void {
     return;
   }
 
-  timeOutput.value = new Date(selectedFrame.timeMs).toISOString();
+  timeOutput && (timeOutput.value = new Date(selectedFrame.timeMs).toISOString());
 
   timeLayer = new TimeCOGLayer({
     id: "time-cog-layer-demo",
@@ -304,14 +302,14 @@ function render(): void {
         cachePolicy: {
           maxFrames: 120,
         },
-    onStats: (stats) => {
-      const wastedKb = Math.round(stats.wastedBytes / 1024);
-      statsOutput.value =
-        `${stats.readyFrameCount}/${stats.frameCount} ready, ` +
-        `${stats.scheduledFrameCount} scheduled | ` +
-        `waste: ${wastedKb} kB | ` +
-        `evicted: ${stats.evictedNeverDisplayed} never-shown / ${stats.evictedTotal} total`;
-    },
+    // onStats: (stats) => {
+    //   const wastedKb = Math.round(stats.wastedBytes / 1024);
+    //   statsOutput.value =
+    //     `${stats.readyFrameCount}/${stats.frameCount} ready, ` +
+    //     `${stats.scheduledFrameCount} scheduled | ` +
+    //     `waste: ${wastedKb} kB | ` +
+    //     `evicted: ${stats.evictedNeverDisplayed} never-shown / ${stats.evictedTotal} total`;
+    // },
   });
 
   deck.setProps({
@@ -324,10 +322,12 @@ function render(): void {
         maxZoom: 19,
         renderSubLayers: (props) => {
           const {
-            bbox: { west, south, east, north },
+            // bbox: { west, south, east, north },
+            // [mins, maxs]
+            boundingBox: [[west, south], [east, north]], //{ west, south, east, north },
           } = props.tile;
           return new BitmapLayer(props, {
-            data: null,
+            data: undefined,
             image: props.data as string,
             bounds: [west, south, east, north],
           });
@@ -349,13 +349,13 @@ function updateSliderFromTime(timeMs: number): void {
       break;
     }
   }
-  frameInput.value = String(sliderIndex);
+  frameInput && (frameInput.value = String(sliderIndex));
 }
 
 function startPlayback(): void {
   playing = true;
   lastFrameTime = null;
-  playButton.innerHTML = "&#9646;&#9646;";
+  playButton && (playButton.innerHTML = "&#9646;&#9646;");
   render();
 
   function tick(now: number): void {
@@ -396,7 +396,7 @@ function startPlayback(): void {
 
 function stopPlayback(): void {
   playing = false;
-  playButton.innerHTML = "&#9654;";
+  playButton && (playButton.innerHTML = "&#9654;");
   if (animFrameId !== null) {
     cancelAnimationFrame(animFrameId);
     animFrameId = null;

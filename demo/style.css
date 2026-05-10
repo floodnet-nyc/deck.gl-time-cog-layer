@@ -9,20 +9,25 @@ body,
 
 body {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #101820;
-  background: #f7f8fa;
+  /* color: #101820;
+  background: #f7f8fa; */
+  background: #101820;
+  color: #f7f8fa;
 }
 
 #controls {
   position: fixed;
+  left: 16px;
   right: 16px;
   bottom: 16px;
   z-index: 1;
   display: grid;
   gap: 10px;
-  width: min(360px, calc(100vw - 32px));
-  padding: 14px;
-  background: rgba(255, 255, 255, 0.92);
+  /* width: min(360px, calc(100vw - 32px)); */
+  width: calc(100% - 32px);
+  padding: 8px;
+  background: #10182066;
+  backdrop-filter: blur(12px);
   border: 1px solid rgba(16, 24, 32, 0.12);
   border-radius: 8px;
   box-shadow: 0 12px 32px rgba(16, 24, 32, 0.16);
@@ -82,7 +87,6 @@ input {
 
 output {
   font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  color: #394957;
 }
 
 #diagnostics {

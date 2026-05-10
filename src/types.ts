@@ -1,5 +1,6 @@
 import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
-import type { TileCachePolicy } from "./sequence-tile-cache.js";
+import type { SequenceTileCache, TileCachePolicy } from "./sequence-tile-cache.js";
+import { FramePrefetcher } from "./frame-prefetcher.js";
 
 /** Accepted input types for a single point on the playback timeline. */
 export type TimeValue = string | number | Date;
@@ -251,3 +252,106 @@ export type TimeCOGLayerProps = COGLayerPassThroughProps & {
   /** Forwarded to the underlying COGLayer for the initial (representative) GeoTIFF. */
   onGeoTIFFLoad?: COGLayerProps["onGeoTIFFLoad"];
 };
+
+
+export type TileCoord = { x: number; y: number; z: number };
+
+/**
+ * Internal state for {@link TimeCOGLayer}.
+ *
+ * The state is intentionally flat so that deck.gl can shallow-diff it
+ * efficiently across the render / update cycle.  The three “shared
+ * infrastructure” fields — `tileCache`, `prefetcher`, and
+ * `visibleTileRef` — are created once in `initializeState` and live
+ * for the full lifetime of the layer.  The sublayer
+ * (`TimeSequenceTileLayer`) reads from them via props, so they must
+ * remain the **same object** across renders.
+ */
+export type TimeCOGLayerState = {
+  /** Full ordered catalog of every frame (time → URL).  Never mutated, only replaced when `frames` prop changes. */
+  catalog: NormalizedTimeCOGFrame[];
+
+  /**
+   * The shared GPU / CPU tile cache.
+   * Stores decoded textures keyed by `(frameId, tileX, tileY, zoom)`.
+   * Both the sublayer (`_getTileDataCallback`) and the
+   * `FramePrefetcher` read from and write to this cache, which is why
+   * it lives on the parent composite layer.
+   */
+  tileCache: SequenceTileCache;
+
+  /**
+   * Background prefetch pipeline.
+   * On every `updateState` it receives the current playback snapshot
+   * (target frame, scheduled frames, visible tiles, device, etc.) and
+   * proactively fetches tiles for nearby frames.
+   */
+  prefetcher: FramePrefetcher;
+
+  /**
+   * Shared mutable reference that the inner TileLayer updates via its
+   * `onViewportLoad` callback.  The parent layer reads this on each
+   * `updateState` to feed the prefetcher.
+   */
+  visibleTileRef: { tiles: TileCoord[] };
+
+  /**
+   * The GeoTIFF URL of the very first displayed frame.
+   * This URL is passed as the `geotiff` prop to the persistent
+   * `COGLayer` sublayer so that the shared tileset descriptor is
+   * parsed **once** and reused for the lifetime of the layer.
+   * Changing the `geotiff` URL would cause COGLayer to re-parse the
+   * header, tearing down the descriptor and inner TileLayer.
+   */
+  initialGeotiffUrl: string;
+
+  /** The current playback time, as a millisecond epoch. */
+  currentTimeMs: number;
+
+  /** The frame closest to `currentTimeMs` in the catalog. */
+  targetFrame: NormalizedTimeCOGFrame | null;
+
+  /**
+   * The frame that is actually visible on screen.
+   * May differ from `targetFrame` when the configured
+   * `missingFramePolicy` resolves to a fallback (e.g. `hold-last`).
+   */
+  displayFrame: NormalizedTimeCOGFrame | null;
+
+  /** Frames selected for prefetching, sorted by priority (target first). */
+  scheduledFrames: NormalizedTimeCOGFrame[];
+
+  /** True when the requested time has no exact match in the catalog. */
+  missing: boolean;
+
+  /** Tracks the most recently displayed frame so that `onFrameDisplayed` only fires on transitions. */
+  lastDisplayedFrameId: string | null;
+
+  /** Detected playback interaction state, derived from prop change frequency. */
+  interactionMode: InteractionMode;
+
+  /** `Date.now()` of the last user-triggered timing change (seek / scrub). */
+  lastInteractionMs: number;
+
+  /** Timer that fires `fullResUpgradeIdleMs` after the last interaction to trigger full-res upgrades. */
+  upgradeTimer: ReturnType<typeof setTimeout> | null;
+
+  /** Frame IDs that have already fired `onFrameReady` to avoid duplicate signals. */
+  readyFrameIds: Set<string>;
+};
+
+export type DiagnosticSnapshot = {
+    tileCache: SequenceTileCache;
+    visibleTiles: { x: number; y: number; z: number }[];
+    frameIds: string[];
+    allFrameIds: string[];
+    playheadIndex: number;
+    maxZoom: number;
+    tileGrid: Record<number, { maxX: number; maxY: number }>;
+    wastedBytes: number;
+    evictedNeverDisplayed: number;
+    abortedTasks: number;
+    scheduledFrameIds: Set<string>;
+    inFlightKeys: Set<string>;
+    abortedKeys: Set<string>;
+  }
