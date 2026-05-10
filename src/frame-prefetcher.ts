@@ -124,6 +124,8 @@ export class FramePrefetcher {
   private uploadsThisFrame = 0;
   private maxDecodeTasks: number;
   private maxGpuUploads: number;
+  private readonly originalMaxConcurrent: number;
+  private consecutiveLowAbort = 0;
 
   /** Per-frame EWMA of tile byteLength, used for ETA-aware size penalty. */
   private frameAvgBytes = new Map<string, number>();
@@ -151,6 +153,7 @@ export class FramePrefetcher {
   ) {
     this.tileCache = tileCache;
     this.maxConcurrent = maxConcurrent;
+    this.originalMaxConcurrent = maxConcurrent;
     this.maxDecodeTasks = maxDecodeTasks ?? maxConcurrent;
     this.maxGpuUploads = maxGpuUploads ?? Math.max(1, Math.floor(maxConcurrent / 2));
     this.scoringDefaults = { ...FramePrefetcher.FALLBACK_WEIGHTS, ...scoringWeights };
@@ -188,7 +191,23 @@ export class FramePrefetcher {
     let effectiveMaxConcurrent = this.maxConcurrent;
 
     if (abortRate > 0.5 && this.totalTasks > 4) {
-      effectiveMaxConcurrent = Math.max(1, Math.floor(this.maxConcurrent / 2));
+      effectiveMaxConcurrent = Math.max(1, Math.floor(this.originalMaxConcurrent / 2));
+      this.consecutiveLowAbort = 0;
+    } else if (abortRate < 0.1) {
+      this.consecutiveLowAbort += 1;
+
+      if (
+        this.consecutiveLowAbort >= 3 &&
+        this.maxConcurrent < this.originalMaxConcurrent
+      ) {
+        effectiveMaxConcurrent = Math.min(
+          this.originalMaxConcurrent,
+          this.maxConcurrent + 1,
+        );
+        this.consecutiveLowAbort = 0;
+      }
+    } else {
+      this.consecutiveLowAbort = 0;
     }
 
     if (effectiveMaxConcurrent !== this.maxConcurrent) {
@@ -476,31 +495,33 @@ export class FramePrefetcher {
     const weights = { ...this.scoringDefaults, ...snapshot.scoringWeights };
     const absDistance = Math.abs(distanceIndex);
 
-    const v = this.viewportSalienceScore(absDistance, weights);
+    const v = this.temporalProximityScore(absDistance, weights);
     const d = this.directionScore(distanceIndex, snapshot, weights);
     const b = this.bufferShortfallScore(distanceIndex, snapshot, weights);
     const i = this.interactionScore(absDistance, snapshot, weights);
     const q = this.qualityUrgencyScore(task, snapshot, weights);
     const s = this.sizeHintPenalty(task, weights);
-    const e = this.etaPenalty(weights);
+    const e = this.etaPenalty(task, weights);
 
     return Math.max(0, Math.min(200, v + d + b + i + q + s + e));
   }
 
   /**
-   * Viewport-salience score (V).
+   * Temporal-proximity score (proxy for viewport-salience V).
    *
    * All visible tiles in the current viewport share the same spatial
-   * importance, so we use temporal distance as a proxy:
+   * importance, so temporal distance from the target frame serves as
+   * the primary salience proxy: frames closer to the playhead are
+   * more likely to be displayed next.
    *
-   * | distance | level | score |
-   * |----------|-------|-------|
-   * | 0        | 3     | 3 * W |
-   * | 1        | 2     | 2 * W |
-   * | 2        | 1     | 1 * W |
-   * | ≥3       | 0     | 0     |
+   * | distance | level | score      |
+   * |----------|-------|------------|
+   * | 0        | 3     | 3 * W_v    |
+   * | 1        | 2     | 2 * W_v    |
+   * | 2        | 1     | 1 * W_v    |
+   * | >=3      | 0     | 0          |
    */
-  private viewportSalienceScore(
+  private temporalProximityScore(
     absDistance: number,
     weights: Required<ScoringWeights>,
   ): number {
@@ -614,7 +635,10 @@ export class FramePrefetcher {
    *
    * Byte estimate sources (in order of preference):
    * 1. Frame-level `byteSizeHint` (carried on the catalog entry).
-   * 2. Per-frame EWMA of previously-fetched `byteLength` values.
+   *    Because this is a whole-COG size rather than a per-tile size,
+   *    the log₂-scaled penalty naturally handles the magnitude
+   *    difference between frame-level and tile-level sizes.
+   * 2. Per-frame EWMA of previously-fetched tile `byteLength` values.
    * 3. No penalty when nothing is known.
    */
   private sizeHintPenalty(
@@ -635,16 +659,36 @@ export class FramePrefetcher {
   }
 
   /**
-   * ETA penalty (W_e · rttEWMA).
+   * ETA penalty (W_e · estimatedETA).
    *
-   * Tasks whose tiles are expected to take longer to fetch (based on
-   * the EWMA round-trip-time telemetry) are deprioritised relative to
-   * faster tasks.  Returns 0 when no telemetry has been collected yet.
+   * Estimates per-tile fetch time using the EWMA telemetry:
+   * `estimatedETA ≈ rttEWMA + (bytes / throughputEWMA) * 1000`.
+   *
+   * Tasks whose tiles are expected to take longer are deprioritised.
+   * When no telemetry has been collected yet (`rttEWMA === 0`) or the
+   * weight is disabled (`etaPerMs <= 0`), returns 0.
+   *
+   * Byte estimate sources (in order of preference):
+   * 1. Task's `byteSizeHint` (from the catalog entry).
+   * 2. Per-frame EWMA of previously-fetched `byteLength` values.
+   * 3. No per-tile size estimate → uses bare `rttEWMA` as fallback.
    */
-  private etaPenalty(weights: Required<ScoringWeights>): number {
+  private etaPenalty(
+    task: TileTask,
+    weights: Required<ScoringWeights>,
+  ): number {
     if (this.rttEWMA <= 0 || weights.etaPerMs <= 0) return 0;
 
-    const penalty = Math.round(weights.etaPerMs * this.rttEWMA);
+    const estimatedBytes =
+      task.byteSizeHint ?? this.frameAvgBytes.get(task.frameId) ?? 0;
+
+    let eta = this.rttEWMA;
+
+    if (estimatedBytes > 0 && this.throughputEWMA > 0) {
+      eta += (estimatedBytes / this.throughputEWMA) * 1000;
+    }
+
+    const penalty = Math.round(weights.etaPerMs * eta);
 
     return -Math.min(20, penalty);
   }

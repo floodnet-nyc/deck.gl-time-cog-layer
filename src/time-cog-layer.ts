@@ -525,7 +525,11 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
   /**
    * Compute how many contiguous frames ahead of and behind the
-   * playhead have at least one cached tile.
+   * playhead have full tile coverage.
+   *
+   * Uses {@link SequenceTileCache.hasFullCoverage} per frame so a
+   * frame only counts as buffered when all of its visible tiles are
+   * cached at full resolution — not just any single tile.
    *
    * Used by the prefetcher's buffer-shortfall scoring to boost
    * forward-frame tasks when the ahead-of-playhead buffer is
@@ -535,11 +539,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     displayFrame: NormalizedTimeCOGFrame | null,
     scheduledFrames: NormalizedTimeCOGFrame[],
   ): { bufferedAhead: number; bufferedBehind: number; targetAhead: number } {
-    const cachedFrameIds = this.state
-      ? (this.state as TimeCOGLayerState).tileCache.stats().frameIds
-      : [];
-
-    const cachedSet = new Set(cachedFrameIds);
+    const state = this.state as TimeCOGLayerState;
+    const tiles = state.visibleTileRef.tiles;
 
     const targetIndex = displayFrame
       ? scheduledFrames.findIndex((f) => f.id === displayFrame.id)
@@ -548,11 +549,11 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     let bufferedAhead = 0;
     let bufferedBehind = 0;
 
-    if (targetIndex >= 0) {
+    if (tiles.length > 0 && targetIndex >= 0) {
       for (let i = targetIndex + 1; i < scheduledFrames.length; i += 1) {
         const f = scheduledFrames[i];
 
-        if (f && cachedSet.has(f.id)) {
+        if (f && state.tileCache.hasFullCoverage(f.id, tiles)) {
           bufferedAhead += 1;
         } else {
           break;
@@ -562,7 +563,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       for (let i = targetIndex - 1; i >= 0; i -= 1) {
         const f = scheduledFrames[i];
 
-        if (f && cachedSet.has(f.id)) {
+        if (f && state.tileCache.hasFullCoverage(f.id, tiles)) {
           bufferedBehind += 1;
         } else {
           break;

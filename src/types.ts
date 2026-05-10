@@ -31,9 +31,16 @@ export type TimeCOGFrame = {
   /** Opaque metadata carried through to callbacks. */
   meta?: Record<string, unknown>;
   /**
-   * Estimated compressed byte size of this frame's COG.
-   * Used by the prefetcher to penalise large tiles in the priority queue.
-   * When omitted, the prefetcher auto-estimates from previous fetches.
+   * Estimated compressed byte size of this frame's COG (the entire
+   * file, not per-tile).  Used by the prefetcher to penalise frames
+   * with large COGs in the priority queue via a log₂-scaled penalty.
+   *
+   * When omitted, the prefetcher auto-estimates per-frame byte sizes
+   * from previously-fetched tile `byteLength` values via EWMA.
+   * Because `byteSizeHint` is a *frame-level* estimate while the EWMA
+   * tracks *per-tile* sizes, the EWMA takes precedence when a frame
+   * has been fetched at least once — the hint serves as a cold-start
+   * guide for frames that have not been loaded yet.
    */
   byteSizeHint?: number;
 };
@@ -41,6 +48,9 @@ export type TimeCOGFrame = {
 /**
  * The internally-normalized frame representation produced by
  * {@link normalizeFrameCatalog}.
+ *
+ * Extends {@link TimeCOGFrame} with computed fields and inherits
+ * all user-supplied fields including {@link TimeCOGFrame.byteSizeHint}.
  */
 export type NormalizedTimeCOGFrame = TimeCOGFrame & {
   id: string;
