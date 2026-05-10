@@ -319,12 +319,11 @@ export class FramePrefetcher {
    * Called on seek / scrub and layer teardown.
    */
   abortAll(): void {
-    this.abortedTasks += this.inFlight.size;
-
     for (const [key, entry] of this.inFlight) {
       this.abortedKeys.add(key);
       entry.controller.abort();
     }
+
     this.inFlight.clear();
     this.queue.length = 0;
     this.queuedKeys.clear();

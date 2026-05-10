@@ -87,7 +87,7 @@ export function normalizeFrameCatalog(
  */
 export function canonicalizeUrl(input: string): string {
   try {
-    const url = new URL(input, globalThis.location?.href);
+    const url = new URL(input, window.location?.href);
 
     for (const key of [...url.searchParams.keys()]) {
       if (VOLATILE_QUERY_PARAMS.has(key.toLowerCase())) {

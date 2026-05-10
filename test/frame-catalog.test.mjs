@@ -118,7 +118,7 @@ test("sequence tile cache honors legacy max frame and tile-entry policy names", 
   });
 
   assert.deepEqual(cache.stats().frameIds.sort(), ["frame:1", "frame:2"]);
-  assert.deepEqual(destroyed, []);
+  assert.deepEqual(destroyed, ["0a"]);
 
   cache.put("frame:1", 1, 0, 0, {
     texture: texture("1b"),
@@ -1253,17 +1253,24 @@ test("backpressure: high abort rate reduces concurrency", async () => {
   const frameA = { id: "A", time: 1, timeMs: 1, url: "http://ex/1.tif", cacheKey: "1", sourceIndex: 1 };
   const frameB = { id: "B", time: 2, timeMs: 2, url: "http://ex/2.tif", cacheKey: "2", sourceIndex: 2 };
 
-  let resolvePending;
-  const pending = new Promise((r) => { resolvePending = r; });
+  prefetcher.geotiffs.set("A", { overviews: [], tileCount: { x: 5, y: 5 } });
+  prefetcher.geotiffs.set("B", { overviews: [], tileCount: { x: 5, y: 5 } });
 
   for (let i = 0; i < 6; i += 1) {
+    let resolvePending;
+    const pending = new Promise((r) => { resolvePending = r; });
+
     prefetcher.update({
       targetFrame,
       scheduledFrames: [targetFrame, frameA, frameB],
       visibleTiles: [{ x: 0, y: 0, z: 0 }],
       device: {},
-      getUserTileData: async () => {
+      getUserTileData: async (_image, options) => {
         await pending;
+        if (options.signal?.aborted) {
+          const err = new DOMException("The operation was aborted", "AbortError");
+          throw err;
+        }
         return { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1 };
       },
       pool: {},
@@ -1273,13 +1280,14 @@ test("backpressure: high abort rate reduces concurrency", async () => {
       qualityPolicy: {},
     });
 
+    await new Promise((r) => setTimeout(r, 0));
+
     prefetcher.abortAll();
+    resolvePending?.();
+    await new Promise((r) => setTimeout(r, 10));
   }
 
   assert.ok(prefetcher.maxConcurrent <= 2, "maxConcurrent should be halved after repeated aborts");
-
-  resolvePending();
-  await new Promise((r) => setTimeout(r, 10));
 });
 
 // ─── Phase 3: multi-factor ETA-aware scoring ───

@@ -16,7 +16,6 @@ import { scheduleFrameWindow } from "./util/frame-scheduler.js";
 import { SequenceTileCache } from "./sequence-tile-cache.js";
 import { TimeSequenceTileLayer } from "./time-sequence-tile-layer.js";
 import type {
-  DiagnosticSnapshot,
   InteractionMode,
   NormalizedTimeCOGFrame,
   QualityPolicy,
@@ -25,6 +24,7 @@ import type {
   TimeCOGLayerState,
   TimeCOGStats,
 } from "./types.js";
+import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
 
 
 const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
@@ -123,8 +123,11 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       state.tileCache.updatePolicy(props.cachePolicy ?? {});
     }
 
+    const catalog = framesChanged
+      ? normalizeFrameCatalog(props.frames)
+      : state.catalog;
+
     if (framesChanged) {
-      const catalog = normalizeFrameCatalog(props.frames);
       this.setState({ catalog });
     }
 
@@ -133,11 +136,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
         state.lastInteractionMs = Date.now();
       }
 
-      this.updateFrameState(
-        framesChanged
-          ? normalizeFrameCatalog(props.frames)
-          : state.catalog,
-      );
+      this.updateFrameState(catalog);
     }
   }
 
@@ -253,36 +252,11 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       this.props.missingFramePolicy ?? DEFAULT_MISSING_FRAME_POLICY,
     );
 
-    // TODO: move this to function
-    if (
-      resolution.displayFrame &&
-      (this.props.maxFrameRate ?? 0) > 0 &&
-      playing
-    ) {
-      const bucketIntervalMs =
-        (1000 / this.props.maxFrameRate!) *
-        Math.abs(this.props.playbackRate ?? 0);
-      const originTimeMs = catalog[0]?.timeMs ?? 0;
-      const resolvedBucket = Math.floor(
-        (resolution.displayFrame.timeMs - originTimeMs) / bucketIntervalMs,
-      );
-
-      if (state.lastDisplayedFrameId) {
-        const lastFrame = catalog.find(
-          (f) => f.id === state.lastDisplayedFrameId,
-        );
-
-        if (lastFrame) {
-          const lastBucket = Math.floor(
-            (lastFrame.timeMs - originTimeMs) / bucketIntervalMs,
-          );
-
-          if (lastBucket === resolvedBucket) {
-            resolution.displayFrame = lastFrame;
-          }
-        }
-      }
-    }
+    this.applyMaxFrameRateBucking(
+      resolution,
+      catalog,
+      playing,
+    );
 
     const targetIndex = resolution.displayFrame
       ? findNearestFrameIndex(catalog, resolution.displayFrame.timeMs)
@@ -506,6 +480,47 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     };
   }
 
+  private applyMaxFrameRateBucking(
+    resolution: { displayFrame: NormalizedTimeCOGFrame | null },
+    catalog: NormalizedTimeCOGFrame[],
+    playing: boolean,
+  ): void {
+    const state = this.state;
+    const maxFrameRate = this.props.maxFrameRate ?? 0;
+
+    if (!resolution.displayFrame || maxFrameRate <= 0 || !playing) {
+      return;
+    }
+
+    const bucketIntervalMs =
+      (1000 / maxFrameRate) *
+      Math.abs(this.props.playbackRate ?? 0);
+    const originTimeMs = catalog[0]?.timeMs ?? 0;
+    const resolvedBucket = Math.floor(
+      (resolution.displayFrame.timeMs - originTimeMs) / bucketIntervalMs,
+    );
+
+    if (!state.lastDisplayedFrameId) {
+      return;
+    }
+
+    const lastFrame = catalog.find(
+      (f) => f.id === state.lastDisplayedFrameId,
+    );
+
+    if (!lastFrame) {
+      return;
+    }
+
+    const lastBucket = Math.floor(
+      (lastFrame.timeMs - originTimeMs) / bucketIntervalMs,
+    );
+
+    if (lastBucket === resolvedBucket) {
+      resolution.displayFrame = lastFrame;
+    }
+  }
+
   private emitState(s: TimeCOGLayerState): void {
     const tileStats = s.tileCache.stats();
     const prefetchStats = s.prefetcher.stats();
@@ -658,9 +673,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
    * @param windowSize - Number of frame columns to include in the
    *   window, centered on the playhead (default 60).
    */
-  // TODO: move to type
-  getDiagnosticSnapshot(windowSize = 60): DiagnosticSnapshot {
-    const empty: DiagnosticSnapshot = {
+  getDiagnosticSnapshot(windowSize = 60): TileDiagSnapshot {
+    const empty: TileDiagSnapshot = {
       tileCache: new SequenceTileCache(),
       visibleTiles: [],
       frameIds: [],

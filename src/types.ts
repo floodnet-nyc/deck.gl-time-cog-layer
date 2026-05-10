@@ -339,19 +339,3 @@ export type TimeCOGLayerState = {
   /** Frame IDs that have already fired `onFrameReady` to avoid duplicate signals. */
   readyFrameIds: Set<string>;
 };
-
-export type DiagnosticSnapshot = {
-    tileCache: SequenceTileCache;
-    visibleTiles: { x: number; y: number; z: number }[];
-    frameIds: string[];
-    allFrameIds: string[];
-    playheadIndex: number;
-    maxZoom: number;
-    tileGrid: Record<number, { maxX: number; maxY: number }>;
-    wastedBytes: number;
-    evictedNeverDisplayed: number;
-    abortedTasks: number;
-    scheduledFrameIds: Set<string>;
-    inFlightKeys: Set<string>;
-    abortedKeys: Set<string>;
-  }
