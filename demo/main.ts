@@ -9,7 +9,7 @@ import { CreateTexture, MaskTexture } from "@developmentseed/deck.gl-raster/gpu-
 import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
 import type { Texture } from "@luma.gl/core";
 import type { NormalizedTimeCOGFrame, TimeCOGFrame } from "../src/index.js";
-import { TimeCOGLayer, normalizeFrameCatalog } from "../src/index.js";
+import { TimeCOGLayer, findNearestFrameIndex, normalizeFrameCatalog } from "../src/index.js";
 import { renderTileDiagnostics } from "../src/util/tile-diagnostics.js";
 import "./style.css";
 
@@ -235,8 +235,6 @@ let selectedFrame = catalog[0] as NormalizedTimeCOGFrame | undefined;
 
 frameInput.max = String(Math.max(0, catalog.length - 1));
 
-// const timeSpan = catalog.length > 1 ? catalog[catalog.length - 1].timeMs - catalog[0].timeMs : 0;
-
 let playing = false;
 let playbackRate = DEFAULT_SPEED;
 let lastFrameTime: number | null = null;
@@ -283,33 +281,33 @@ function render(): void {
 
   timeLayer = new TimeCOGLayer({
     id: "time-cog-layer-demo",
-        frames,
-        currentTime: selectedFrame.timeMs,
-        playing,
-        playbackRate,
-        getTileData: getPrecipTileData,
-        renderTile: renderPrecipTile,
-        opacity: DISPLAY_OPACITY,
-        missingFramePolicy: "nearest",
-        maxFrameRate: 10,
-        qualityPolicy: {
-          lowResFirst: false,
-        },
-        bufferPolicy: {
-          backwardFrames: 1,
-          forwardFrames: 3,
-        },
-        cachePolicy: {
-          maxFrames: 120,
-        },
-    // onStats: (stats) => {
-    //   const wastedKb = Math.round(stats.wastedBytes / 1024);
-    //   statsOutput.value =
-    //     `${stats.readyFrameCount}/${stats.frameCount} ready, ` +
-    //     `${stats.scheduledFrameCount} scheduled | ` +
-    //     `waste: ${wastedKb} kB | ` +
-    //     `evicted: ${stats.evictedNeverDisplayed} never-shown / ${stats.evictedTotal} total`;
-    // },
+    frames,
+    currentTime: selectedFrame.timeMs,
+    playing,
+    playbackRate,
+    getTileData: getPrecipTileData,
+    renderTile: renderPrecipTile,
+    opacity: DISPLAY_OPACITY,
+    missingFramePolicy: "nearest",
+    maxFrameRate: 10,
+    qualityPolicy: {
+      lowResFirst: false,
+    },
+    bufferPolicy: {
+      backwardFrames: 1,
+      forwardFrames: 3,
+    },
+    cachePolicy: {
+      maxFrames: 120,
+    },
+    onStats: (stats) => {
+      const wastedKb = Math.round(stats.wastedBytes / 1024);
+      statsOutput && (statsOutput.value =
+        `${stats.readyFrameCount}/${stats.frameCount} ready, ` +
+        `${stats.scheduledFrameCount} scheduled | ` +
+        `waste: ${wastedKb} kB | ` +
+        `evicted: ${stats.evictedNeverDisplayed} never-shown / ${stats.evictedTotal} total`);
+    },
   });
 
   deck.setProps({
@@ -341,15 +339,7 @@ function render(): void {
 }
 
 function updateSliderFromTime(timeMs: number): void {
-  let sliderIndex = 0;
-  for (let i = 0; i < catalog.length; i += 1) {
-    if (catalog[i].timeMs <= timeMs) {
-      sliderIndex = i;
-    } else {
-      break;
-    }
-  }
-  frameInput && (frameInput.value = String(sliderIndex));
+  frameInput && (frameInput.value = String(findNearestFrameIndex(catalog, timeMs)));
 }
 
 function startPlayback(): void {
@@ -374,18 +364,16 @@ function startPlayback(): void {
           newTimeMs = catalog[catalog.length - 1].timeMs;
         }
 
-        const nearestIndex = findNearestFrameIndex(newTimeMs);
+        const nearestIndex = findNearestFrameIndex(catalog, newTimeMs);
         selectedFrame = catalog[nearestIndex];
         if (nearestIndex !== lastFrameIndex) {
-          // console.log(`Advancing to frame ${nearestIndex} at time ${new Date(selectedFrame.timeMs).toISOString()}`);
           updateSliderFromTime(newTimeMs);
           render();
           lastFrameTime = now;
         }
         lastFrameIndex = nearestIndex;
       }
-    }
-    else {
+    } else {
       lastFrameTime = now;
     }
     animFrameId = requestAnimationFrame(tick);
@@ -402,19 +390,6 @@ function stopPlayback(): void {
     animFrameId = null;
   }
   render();
-}
-
-function findNearestFrameIndex(timeMs: number): number {
-  let best = 0;
-  let bestDiff = Math.abs(catalog[0].timeMs - timeMs);
-  for (let i = 1; i < catalog.length; i += 1) {
-    const diff = Math.abs(catalog[i].timeMs - timeMs);
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      best = i;
-    }
-  }
-  return best;
 }
 
 playButton.addEventListener("click", () => {

@@ -21,7 +21,6 @@ type TileTask = {
   z: number;
   quality: TileQuality;
   priority: number;
-  bias: number;
   /** User-supplied byte-size estimate from the frame catalog (if any). */
   byteSizeHint?: number;
 };
@@ -121,7 +120,6 @@ export class FramePrefetcher {
   private throughputEWMA = 0;
   private totalTasks = 0;
   private abortedTasks = 0;
-  private abortedKeys = new Set<string>();
   private uploadsThisFrame = 0;
   private maxDecodeTasks: number;
   private maxGpuUploads: number;
@@ -179,7 +177,6 @@ export class FramePrefetcher {
     }
 
     for (const key of toAbort) {
-      this.abortedKeys.add(key);
       this.inFlight.delete(key);
     }
 
@@ -231,7 +228,7 @@ export class FramePrefetcher {
         continue;
       }
 
-      const { quality, bias } = this.qualityForFrame(
+      const { quality } = this.qualityForFrame(
         interactionMode,
         distanceIndex,
         snapshot.qualityPolicy,
@@ -257,7 +254,6 @@ export class FramePrefetcher {
           y: tile.y,
           z: tile.z,
           quality,
-          bias,
           priority: this.score(
             { frameId: frame.id, x: tile.x, y: tile.y, z: tile.z, quality } as TileTask,
             distanceIndex,
@@ -295,7 +291,6 @@ export class FramePrefetcher {
               y: tile.y,
               z: tile.z,
               quality: "full",
-              bias: 0,
               priority: 0,
             };
             const distanceIndex =
@@ -322,8 +317,7 @@ export class FramePrefetcher {
    * Called on seek / scrub and layer teardown.
    */
   abortAll(): void {
-    for (const [key, entry] of this.inFlight) {
-      this.abortedKeys.add(key);
+    for (const [, entry] of this.inFlight) {
       entry.controller.abort();
     }
 
@@ -343,9 +337,9 @@ export class FramePrefetcher {
     return [...this.inFlight.keys()];
   }
 
-  /** Return the keys of all tasks aborted since the layer was created. */
+  /** @deprecated Abort rate is now tracked via {@link stats}.abortRate. */
   getAbortedKeys(): Set<string> {
-    return this.abortedKeys;
+    return new Set<string>();
   }
 
   stats(): {
@@ -463,7 +457,6 @@ export class FramePrefetcher {
     } catch (err) {
       if ((err as Error)?.name === "AbortError") {
         this.abortedTasks += 1;
-        this.abortedKeys.add(key);
       } else if (!isMissingTileError(err)) {
         console.warn("FramePrefetcher: tile fetch failed", err);
       }
@@ -711,20 +704,20 @@ export class FramePrefetcher {
     mode: InteractionMode,
     _distanceIndex: number,
     policy: QualityPolicy,
-  ): { quality: TileQuality; bias: number } {
+  ): { quality: TileQuality } {
     if (policy.lowResFirst === false) {
-      return { quality: "preview", bias: 0 };
+      return { quality: "full" };
     }
 
-    if (mode === "scrubbing") {
-      return { quality: "preview", bias: policy.scrubOverviewBias ?? 2 };
+    // Progressive overview loading (coarser zoom bias) is intentionally
+    // disabled in the render path — see _getTileDataCallback comment in
+    // TimeSequenceTileLayer. Tasks are always fetched at the exact tile
+    // coordinates; "preview" vs "full" here affects only scoring.
+    if (mode === "scrubbing" || mode === "seeking") {
+      return { quality: "preview" };
     }
 
-    if (mode === "seeking") {
-      return { quality: "preview", bias: policy.previewOverviewBias ?? 1 };
-    }
-
-    return { quality: "preview", bias: policy.previewOverviewBias ?? 1 };
+    return { quality: "preview" };
   }
 
   private pruneQueue(scheduledIds: Set<string>): void {
@@ -756,5 +749,5 @@ export class FramePrefetcher {
 }
 
 function taskKey(frameId: string, x: number, y: number, z: number): string {
-  return JSON.stringify([frameId, x, y, z]);
+  return `${frameId}:${x}:${y}:${z}`;
 }

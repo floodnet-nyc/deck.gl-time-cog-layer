@@ -133,6 +133,10 @@ export class SequenceTileCache {
    * the coordinates to coarser zoom levels (power-of-2 pyramid) up to
    * `maxBias` levels and returns the first hit — which is the closest
    * available resolution to the target zoom.
+   *
+   * @internal Not used by the current render path (progressive overview
+   * loading is intentionally disabled — see `_getTileDataCallback` in
+   * `TimeSequenceTileLayer`). Preserved for future re-enablement.
    */
   getBest(
     frameId: string,
@@ -400,7 +404,8 @@ export class SequenceTileCache {
     }
 
     if (bestKey === null) {
-      const oldestKey = this.findOldestUnprotected();
+      // All remaining tiles are protected — evict the globally oldest one anyway.
+      const oldestKey = this.findOldestTile();
 
       if (oldestKey) {
         const entry = this.tiles.get(oldestKey);
@@ -424,7 +429,7 @@ export class SequenceTileCache {
     this.tiles.delete(bestKey);
   }
 
-  private findOldestUnprotected(): string | null {
+  private findOldestTile(): string | null {
     let oldestKey: string | null = null;
     let oldestAccess = Number.POSITIVE_INFINITY;
 

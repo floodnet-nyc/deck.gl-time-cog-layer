@@ -68,12 +68,11 @@ const TIME_SEQ_TILE_LAYER_NAME = "TimeSequenceTileLayer";
  *
  * ### `renderLayers()`
  * Replaces the base `RasterTileLayer.renderLayers` to construct the
- * inner `TileLayer` with a **viewport-aware** `updateTriggers.all`.
- * The `all` key is composed as
- * `${Math.round(viewport.zoom)}`, so that
- * `tileset.reloadAll()` fires on **both** frame changes and zoom
- * changes.  Without the zoom component, tiles from a previous zoom
- * level would persist in the tileset cache when the user zooms out,
+ * inner `TileLayer` with split `updateTriggers`.
+ * `getTileData` is keyed on `currentFrameId` so frame changes trigger
+ * `tileset.reloadAll()`.  `all` is keyed on `Math.round(viewport.zoom)`
+ * so that zoom changes also flush the tileset cache — without this,
+ * tiles from a previous zoom level persist when the user zooms out,
  * producing a frozen ghost raster.
  *
  * ### `_getTileDataCallback()`

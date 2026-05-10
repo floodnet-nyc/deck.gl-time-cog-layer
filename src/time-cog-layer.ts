@@ -29,6 +29,8 @@ import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
 
 const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
 
+const EMPTY_TILE_CACHE = new SequenceTileCache();
+
 /**
  * A deck.gl `CompositeLayer` that orchestrates time-indexed playback of
  * Cloud-Optimized GeoTIFF (COG) sequences.
@@ -374,14 +376,22 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       return "playing";
     }
 
-    const elapsed = Date.now() - lastInteractionMs;
-
-    if (lastInteractionMs === 0 || elapsed >= (this.props.qualityPolicy?.fullResUpgradeIdleMs ?? 150)) {
+    if (lastInteractionMs === 0) {
       return "idle";
     }
 
-    if (elapsed < 200) {
+    const elapsed = Date.now() - lastInteractionMs;
+
+    if (elapsed < 80) {
       return "scrubbing";
+    }
+
+    if (elapsed < 200) {
+      return "seeking";
+    }
+
+    if (elapsed >= (this.props.qualityPolicy?.fullResUpgradeIdleMs ?? 300)) {
+      return "idle";
     }
 
     return "seeking";
@@ -452,31 +462,35 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     const state = this.state;
     const tiles = state.visibleTileRef.tiles;
 
-    const targetIndex = displayFrame
-      ? scheduledFrames.findIndex((f) => f.id === displayFrame.id)
-      : -1;
-
     let bufferedAhead = 0;
     let bufferedBehind = 0;
 
-    if (tiles.length > 0 && targetIndex >= 0) {
-      for (let i = targetIndex + 1; i < scheduledFrames.length; i += 1) {
-        const f = scheduledFrames[i];
+    if (tiles.length > 0 && displayFrame) {
+      // Sort by time so forward/backward walks are in temporal order, not
+      // priority order (scheduledFrames is priority-sorted, which interleaves
+      // forward and backward frames and would cause premature loop breaks).
+      const byTime = [...scheduledFrames].sort((a, b) => a.timeMs - b.timeMs);
+      const idx = byTime.findIndex((f) => f.id === displayFrame.id);
 
-        if (f && state.tileCache.hasFullCoverage(f.id, tiles)) {
-          bufferedAhead += 1;
-        } else {
-          break;
+      if (idx >= 0) {
+        for (let i = idx + 1; i < byTime.length; i += 1) {
+          const f = byTime[i];
+
+          if (f && state.tileCache.hasFullCoverage(f.id, tiles)) {
+            bufferedAhead += 1;
+          } else {
+            break;
+          }
         }
-      }
 
-      for (let i = targetIndex - 1; i >= 0; i -= 1) {
-        const f = scheduledFrames[i];
+        for (let i = idx - 1; i >= 0; i -= 1) {
+          const f = byTime[i];
 
-        if (f && state.tileCache.hasFullCoverage(f.id, tiles)) {
-          bufferedBehind += 1;
-        } else {
-          break;
+          if (f && state.tileCache.hasFullCoverage(f.id, tiles)) {
+            bufferedBehind += 1;
+          } else {
+            break;
+          }
         }
       }
     }
@@ -683,7 +697,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
    */
   getDiagnosticSnapshot(windowSize = 60): TileDiagSnapshot {
     const empty: TileDiagSnapshot = {
-      tileCache: new SequenceTileCache(),
+      tileCache: EMPTY_TILE_CACHE,
       visibleTiles: [],
       frameIds: [],
       allFrameIds: [],
