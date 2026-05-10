@@ -15,6 +15,7 @@ import { FramePrefetcher } from "./frame-prefetcher.js";
 import { scheduleFrameWindow } from "./util/frame-scheduler.js";
 import { SequenceTileCache } from "./sequence-tile-cache.js";
 import { TimeSequenceTileLayer } from "./time-sequence-tile-layer.js";
+import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 import type {
   InteractionMode,
   NormalizedTimeCOGFrame,
@@ -82,10 +83,12 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   initializeState(): void {
     const props = this.props;
     const tileCache = new SequenceTileCache(props.cachePolicy);
+    const geotiffRegistry = new GeoTIFFRegistry();
 
     this.setState({
       catalog: [],
       tileCache,
+      geotiffRegistry,
       prefetcher: new FramePrefetcher(
         tileCache,
         props.schedulerPolicy?.maxNetworkRequests ?? 4,
@@ -212,6 +215,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       currentFrameRequestInit: frame.requestInit,
       previewBias: bias,
       visibleTileRef: state.visibleTileRef,
+      geotiffRegistry: state.geotiffRegistry,
       onVisibleTilesChange: () => this.updatePrefetch(),
       onGeoTIFFLoad: onGeoTIFFLoad ?? undefined,
     } as object);
@@ -617,6 +621,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       signal: this.props.signal,
       interactionMode: state.interactionMode,
       qualityPolicy: this.props.qualityPolicy ?? {},
+      geotiffRegistry: state.geotiffRegistry,
     });
 
     this.checkFrameReady(displayFrame);

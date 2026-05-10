@@ -16,6 +16,7 @@ import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { openGeoTIFF } from "./util/geotiff-source.js";
 import type { TileQuality, SequenceTileCache } from "./sequence-tile-cache.js";
+import type { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 import { hasTile, imageForZ, isMissingTileError } from "./util/tile-utils.js";
 
 type TileCoord = { x: number; y: number; z: number };
@@ -53,6 +54,14 @@ export type TimeSequenceTileLayerProps = {
 
   /** Optional callback fired whenever the visible tile set changes. */
   onVisibleTilesChange?: () => void;
+
+  /**
+   * Optional shared GeoTIFF registry.  When provided, the sublayer
+   * uses this registry instead of its own internal `geotiffByUrl`
+   * Map, eliminating duplicate COG header fetches between the render
+   * path and the background prefetcher.
+   */
+  geotiffRegistry?: GeoTIFFRegistry;
 
   onViewportLoad?: ((tiles: Tile2DHeader<Record<string, unknown>>[]) => void);
 };
@@ -250,6 +259,73 @@ export class TimeSequenceTileLayer<
       }
 
       tileCache.recordMiss();
+
+      const { geotiffRegistry } = this.props;
+
+      if (geotiffRegistry) {
+        let geotiff: GeoTIFF | undefined = geotiffRegistry.get(currentFrameId);
+
+        if (!geotiff) {
+          geotiff = await geotiffRegistry.open(
+            currentFrameId,
+            currentFrameUrl,
+            currentFrameRequestInit,
+          );
+        }
+
+        if (!hasTile(imageForZ(geotiff, z) ?? geotiff, x, y)) {
+          return null as DataT;
+        }
+
+        const getTileDataOptions: GetTileDataOptions = {
+          device: options.device,
+          x,
+          y,
+          signal: options.signal,
+          pool: this.props.pool ?? defaultDecoderPool(),
+        };
+
+        let result: DataT;
+
+        try {
+          const image = imageForZ(geotiff, z);
+          result = await (
+            userFn as (
+              img: GeoTIFF | Overview,
+              opts: GetTileDataOptions,
+            ) => Promise<DataT>
+          )(image ?? geotiff, getTileDataOptions);
+        } catch (error) {
+          if (isMissingTileError(error)) {
+            return null as DataT;
+          }
+          throw error;
+        }
+
+        if (result && typeof result === "object" && "texture" in result) {
+          const r = result as unknown as {
+            texture: Texture;
+            mask?: Texture;
+            byteLength?: number;
+            width: number;
+            height: number;
+          };
+
+          tileCache.put(currentFrameId, x, y, z, {
+            x,
+            y,
+            z,
+            texture: r.texture,
+            mask: r.mask,
+            byteLength: r.byteLength ?? 0,
+            width: r.width,
+            height: r.height,
+            quality: "full" as TileQuality,
+          });
+        }
+
+        return result;
+      }
 
       const geotiffByUrl =
         this.state.geotiffByUrl ?? new Map<string, GeoTIFF>();

@@ -1,6 +1,7 @@
 import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
 import type { SequenceTileCache, TileCachePolicy } from "./sequence-tile-cache.js";
-import { FramePrefetcher } from "./frame-prefetcher.js";
+import type { FramePrefetcher } from "./frame-prefetcher.js";
+import type { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 
 /** Accepted input types for a single point on the playback timeline. */
 export type TimeValue = string | number | Date;
@@ -281,12 +282,22 @@ export type TimeCOGLayerState = {
   tileCache: SequenceTileCache;
 
   /**
+   * Shared GeoTIFF instance registry.
+   * Both the sublayer and the prefetcher use this to open COG files,
+   * eliminating redundant header fetches.
+   */
+  geotiffRegistry: GeoTIFFRegistry;
+
+  /**
    * Background prefetch pipeline.
    * On every `updateState` it receives the current playback snapshot
    * (target frame, scheduled frames, visible tiles, device, etc.) and
    * proactively fetches tiles for nearby frames.
    */
   prefetcher: FramePrefetcher;
+
+  /**
+
 
   /**
    * Shared mutable reference that the inner TileLayer updates via its

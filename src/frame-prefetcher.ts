@@ -5,25 +5,17 @@ import type {
   DecoderPool,
 } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
+import type { SequenceTileCache } from "./sequence-tile-cache.js";
 import { openGeoTIFF } from "./util/geotiff-source.js";
-import type { SequenceTileCache, TileQuality } from "./sequence-tile-cache.js";
 import { hasTile, imageForZ, isMissingTileError } from "./util/tile-utils.js";
 import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWeights } from "./types.js";
-
-type TileCoord = { x: number; y: number; z: number };
-
-type TileTask = {
-  frameId: string;
-  frameUrl: string;
-  requestInit?: RequestInit;
-  x: number;
-  y: number;
-  z: number;
-  quality: TileQuality;
-  priority: number;
-  /** User-supplied byte-size estimate from the frame catalog (if any). */
-  byteSizeHint?: number;
-};
+import { TaskQueue, taskKey, type TileCoord, type TileTask } from "./task-queue.js";
+import {
+  scoreTask,
+  qualityForTask,
+  type ScoringContext,
+} from "./util/task-scorer.js";
+import type { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 
 /** The current playback snapshot, passed from `TimeCOGLayer.updateState`. */
 type PrefetchSnapshot = {
@@ -47,21 +39,15 @@ type PrefetchSnapshot = {
   signal?: AbortSignal;
   interactionMode: InteractionMode;
   qualityPolicy: QualityPolicy;
-  /** Fraction of visible tiles cached at full quality for the target frame (0–1). */
   coverage?: number;
-
-  /** Buffer coverage summary computed by the coordinator. */
   bufferState?: {
     bufferedAhead: number;
     bufferedBehind: number;
     targetAhead: number;
   };
-
-  /** Optional per-factor scoring weights from SchedulerPolicy. */
   scoringWeights?: ScoringWeights;
+  geotiffRegistry?: GeoTIFFRegistry;
 };
-
-const MAX_GEOTIFF_CACHE = 8;
 
 /**
  * Background tile-prefetch pipeline with progressive loading support.
@@ -75,25 +61,6 @@ const MAX_GEOTIFF_CACHE = 8;
  * loaded by the sublayer), it creates `(frameId, x, y, z, quality)`
  * tasks and scores them by temporal distance and playback direction.
  *
- * ## Progressive loading
- *
- * During seek / scrub interactions, tasks use biased (coarser) zoom
- * levels so that preview tiles appear quickly.  After the interaction
- * settles (idle mode), the prefetcher schedules full-resolution
- * upgrade tasks for any tile that has a preview entry but no full
- * entry.
- *
- * ## Execution
- *
- * Tasks are executed concurrently up to `maxConcurrent` (default 4).
- * Each task lazily opens the COG for the target frame, selects the
- * appropriate overview level, calls the user's `getTileData` function
- * (which creates GPU textures), and stores the result in the shared
- * `SequenceTileCache`.
- *
- * When the user seeks or the schedule window shifts, stale in-flight
- * tasks are aborted via `AbortController`.
- *
  * ## Scoring
  *
  * ```text
@@ -104,44 +71,33 @@ const MAX_GEOTIFF_CACHE = 8;
  */
 export class FramePrefetcher {
   private tileCache: SequenceTileCache;
-  private queue: TileTask[] = [];
-  private queuedKeys = new Set<string>();
-  private inFlight = new Map<string, { controller: AbortController; frameId: string }>();
-  private geotiffs = new Map<string, GeoTIFF>();
+  private taskQueue = new TaskQueue();
   private maxConcurrent: number;
 
   private device: Device | null = null;
   private getUserTileDataFn: PrefetchSnapshot["getUserTileData"] | null = null;
   private pool: DecoderPool | null = null;
   private layerSignal: AbortSignal | undefined;
-  private activeCount = 0;
-
-  private rttEWMA = 0;
-  private throughputEWMA = 0;
-  private totalTasks = 0;
-  private abortedTasks = 0;
   private uploadsThisFrame = 0;
   private maxDecodeTasks: number;
   private maxGpuUploads: number;
   private readonly originalMaxConcurrent: number;
   private consecutiveLowAbort = 0;
 
+  private rttEWMA = 0;
+  private throughputEWMA = 0;
+  private totalTasks = 0;
+  private abortedTasks = 0;
+
   /** Per-frame EWMA of tile byteLength, used for ETA-aware size penalty. */
-  private frameAvgBytes = new Map<string, number>();
+  frameAvgBytes = new Map<string, number>();
 
-  /** Immutable scoring weights fallback (populated from constructor/defaults). */
-  private scoringDefaults: Required<ScoringWeights>;
+  private defaultScoringWeights: ScoringWeights;
 
-  private static readonly FALLBACK_WEIGHTS: Required<ScoringWeights> = {
-    viewportSalience: 30,
-    direction: 15,
-    bufferShortfall: 20,
-    interaction: 25,
-    qualityUpgrade: 50,
-    qualityFreshPreview: 20,
-    sizeHintPerBit: 2,
-    etaPerMs: 0.02,
-  };
+  private geotiffRegistry: GeoTIFFRegistry | null = null;
+
+  /** Backward-compat geotiff map used when no shared registry is wired. */
+  private localGeotiffs = new Map<string, GeoTIFF>();
 
   constructor(
     tileCache: SequenceTileCache,
@@ -155,7 +111,34 @@ export class FramePrefetcher {
     this.originalMaxConcurrent = maxConcurrent;
     this.maxDecodeTasks = maxDecodeTasks ?? maxConcurrent;
     this.maxGpuUploads = maxGpuUploads ?? Math.max(1, Math.floor(maxConcurrent / 2));
-    this.scoringDefaults = { ...FramePrefetcher.FALLBACK_WEIGHTS, ...scoringWeights };
+    this.defaultScoringWeights = scoringWeights ?? {};
+  }
+
+  /** @internal Public for test compatibility. */
+  get queue(): TileTask[] {
+    return this.taskQueue.queue;
+  }
+
+  /** @internal Public for test compatibility. */
+  get inFlight(): Map<string, { controller: AbortController; frameId: string }> {
+    return this.taskQueue.inFlight;
+  }
+
+  /** @internal Public for test compatibility. */
+  get queuedKeys(): Set<string> {
+    return this.taskQueue.queuedKeys;
+  }
+
+  /**
+   * Expose the currently-active GeoTIFF store as a writable Map for
+   * backward compatibility with tests that pre-populate fake GeoTIFF
+   * objects via `prefetcher.geotiffs.set(...)`.
+   */
+  get geotiffs(): Map<string, GeoTIFF> {
+    if (this.geotiffRegistry) {
+      return this.geotiffRegistry.mutableMap;
+    }
+    return this.localGeotiffs;
   }
 
   update(snapshot: PrefetchSnapshot): void {
@@ -164,23 +147,12 @@ export class FramePrefetcher {
     this.pool = snapshot.pool;
     this.layerSignal = snapshot.signal;
     this.uploadsThisFrame = 0;
+    this.geotiffRegistry = snapshot.geotiffRegistry ?? null;
 
     const scheduledIds = new Set(snapshot.scheduledFrames.map((f) => f.id));
 
-    const toAbort: string[] = [];
-
-    for (const [key, entry] of this.inFlight) {
-      if (!scheduledIds.has(entry.frameId)) {
-        entry.controller.abort();
-        toAbort.push(key);
-      }
-    }
-
-    for (const key of toAbort) {
-      this.inFlight.delete(key);
-    }
-
-    this.pruneQueue(scheduledIds);
+    this.taskQueue.abortStale(scheduledIds);
+    this.taskQueue.prune(scheduledIds, this.tileCache);
 
     const newTasks: TileTask[] = [];
     const interactionMode = snapshot.interactionMode;
@@ -215,6 +187,26 @@ export class FramePrefetcher {
 
     const skipFutureFrames = coverage < 0.5 && interactionMode !== "idle";
 
+    const scoringCtx: ScoringContext = {
+      getTileCache: () => this.tileCache,
+      getRttEWMA: () => this.rttEWMA,
+      getThroughputEWMA: () => this.throughputEWMA,
+      getFrameAvgBytes: (frameId: string) => this.frameAvgBytes.get(frameId) ?? 0,
+      playing: snapshot.playing,
+      playbackRate: snapshot.playbackRate,
+      interactionMode: snapshot.interactionMode,
+      coverage,
+      bufferState: snapshot.bufferState,
+      scheduledFrames: snapshot.scheduledFrames,
+      targetFrame: snapshot.targetFrame,
+    };
+
+    const { quality: defaultQuality } = qualityForTask(
+      interactionMode,
+      0,
+      snapshot.qualityPolicy.lowResFirst,
+    );
+
     for (const frame of snapshot.scheduledFrames) {
       if (frame.id === snapshot.targetFrame.id) {
         continue;
@@ -228,12 +220,6 @@ export class FramePrefetcher {
         continue;
       }
 
-      const { quality } = this.qualityForFrame(
-        interactionMode,
-        distanceIndex,
-        snapshot.qualityPolicy,
-      );
-
       for (const tile of snapshot.visibleTiles) {
         const key = taskKey(frame.id, tile.x, tile.y, tile.z);
 
@@ -241,11 +227,11 @@ export class FramePrefetcher {
           continue;
         }
 
-        if (this.inFlight.has(key) || this.queuedKeys.has(key)) {
+        if (this.taskQueue.isTracked(key)) {
           continue;
         }
 
-        newTasks.push({
+        const task: TileTask = {
           frameId: frame.id,
           frameUrl: frame.url,
           requestInit: frame.requestInit,
@@ -253,14 +239,19 @@ export class FramePrefetcher {
           x: tile.x,
           y: tile.y,
           z: tile.z,
-          quality,
-          priority: this.score(
-            { frameId: frame.id, x: tile.x, y: tile.y, z: tile.z, quality } as TileTask,
-            distanceIndex,
-            snapshot,
-          ),
-        });
-        this.queuedKeys.add(key);
+          quality: defaultQuality,
+          priority: 0,
+        };
+
+        task.priority = scoreTask(
+          task,
+          distanceIndex,
+          scoringCtx,
+          { ...this.defaultScoringWeights, ...snapshot.scoringWeights },
+        );
+
+        newTasks.push(task);
+        this.taskQueue.markQueued(key);
       }
     }
 
@@ -277,7 +268,7 @@ export class FramePrefetcher {
             continue;
           }
 
-          if (this.inFlight.has(exactKey) || this.queuedKeys.has(exactKey)) {
+          if (this.taskQueue.isTracked(exactKey)) {
             continue;
           }
 
@@ -297,44 +288,35 @@ export class FramePrefetcher {
               snapshot.scheduledFrames.indexOf(frame) -
               snapshot.scheduledFrames.indexOf(snapshot.targetFrame);
 
-            newTasks.push({
-              ...upgradeTask,
-              priority: this.score(upgradeTask, distanceIndex, snapshot),
-            });
-            this.queuedKeys.add(exactKey);
+            upgradeTask.priority = scoreTask(
+              upgradeTask,
+              distanceIndex,
+              scoringCtx,
+              { ...this.defaultScoringWeights, ...snapshot.scoringWeights },
+            );
+
+            newTasks.push(upgradeTask);
+            this.taskQueue.markQueued(exactKey);
           }
         }
       }
     }
 
-    this.queue.push(...newTasks);
-    this.queue.sort((a, b) => b.priority - a.priority);
+    this.taskQueue.enqueue(newTasks);
     this.pump();
   }
 
-  /**
-   * Abort all in-flight tasks and cancel everything in the queue.
-   * Called on seek / scrub and layer teardown.
-   */
   abortAll(): void {
-    for (const [, entry] of this.inFlight) {
-      entry.controller.abort();
-    }
-
-    this.inFlight.clear();
-    this.queue.length = 0;
-    this.queuedKeys.clear();
-    this.activeCount = 0;
+    this.taskQueue.abortAll();
   }
 
   destroy(): void {
     this.abortAll();
-    this.geotiffs.clear();
+    this.localGeotiffs.clear();
   }
 
-  /** Return the keys of all currently in-flight prefetch tasks. */
   getInFlightKeys(): string[] {
-    return [...this.inFlight.keys()];
+    return this.taskQueue.getInFlightKeys();
   }
 
   /** @deprecated Abort rate is now tracked via {@link stats}.abortRate. */
@@ -352,7 +334,7 @@ export class FramePrefetcher {
     const denominator = this.totalTasks || 1;
 
     return {
-      prefetchTaskCount: this.activeCount + this.queue.length,
+      prefetchTaskCount: this.taskQueue.activeCount + this.taskQueue.queue.length,
       rttEWMA: this.rttEWMA,
       throughputEWMA: this.throughputEWMA,
       abortRate: this.abortedTasks / denominator,
@@ -362,15 +344,15 @@ export class FramePrefetcher {
 
   private pump(): void {
     while (
-      this.activeCount < this.maxConcurrent &&
-      this.activeCount < this.maxDecodeTasks &&
+      this.taskQueue.activeCount < this.maxConcurrent &&
+      this.taskQueue.activeCount < this.maxDecodeTasks &&
       this.uploadsThisFrame < this.maxGpuUploads &&
-      this.queue.length > 0
+      this.taskQueue.queue.length > 0
     ) {
-      const task = this.queue.shift();
+      const task = this.taskQueue.dequeue();
 
       if (task) {
-        this.queuedKeys.delete(taskKey(task.frameId, task.x, task.y, task.z));
+        this.taskQueue.unmarkQueued(taskKey(task.frameId, task.x, task.y, task.z));
         this.uploadsThisFrame += 1;
         this.executeTask(task);
       }
@@ -385,28 +367,43 @@ export class FramePrefetcher {
     }
 
     const controller = new AbortController();
-    this.inFlight.set(key, { controller, frameId: task.frameId });
-    this.activeCount += 1;
+    this.taskQueue.start(key, controller, task.frameId);
     this.totalTasks += 1;
 
     const t0 = performance.now();
 
     try {
-      let geotiff = this.geotiffs.get(task.frameId);
+      let geotiff: GeoTIFF | undefined;
 
-      if (!geotiff) {
-        if (this.geotiffs.size >= MAX_GEOTIFF_CACHE) {
-          const firstKey = this.geotiffs.keys().next().value;
+      if (this.geotiffRegistry) {
+        geotiff = this.geotiffRegistry.get(task.frameId);
 
-          if (firstKey) {
-            this.geotiffs.delete(firstKey);
-          }
+        if (!geotiff) {
+          geotiff = await this.geotiffRegistry.open(
+            task.frameId,
+            task.frameUrl,
+            task.requestInit,
+          );
         }
+      } else {
+        geotiff = this.localGeotiffs.get(task.frameId);
 
-        geotiff = await openGeoTIFF(task.frameUrl, {
-          requestInit: task.requestInit,
-        });
-        this.geotiffs.set(task.frameId, geotiff);
+        if (!geotiff) {
+          const MAX_LOCAL_GEOTIFF_CACHE = 8;
+
+          if (this.localGeotiffs.size >= MAX_LOCAL_GEOTIFF_CACHE) {
+            const firstKey = this.localGeotiffs.keys().next().value;
+
+            if (firstKey) {
+              this.localGeotiffs.delete(firstKey);
+            }
+          }
+
+          geotiff = await openGeoTIFF(task.frameUrl, {
+            requestInit: task.requestInit,
+          });
+          this.localGeotiffs.set(task.frameId, geotiff);
+        }
       }
 
       const image = imageForZ(geotiff, task.z);
@@ -461,8 +458,7 @@ export class FramePrefetcher {
         console.warn("FramePrefetcher: tile fetch failed", err);
       }
     } finally {
-      this.inFlight.delete(key);
-      this.activeCount = Math.max(0, this.activeCount - 1);
+      this.taskQueue.finish(key);
       this.pump();
     }
   }
@@ -493,261 +489,4 @@ export class FramePrefetcher {
       );
     }
   }
-
-  private score(
-    task: TileTask,
-    distanceIndex: number,
-    snapshot: PrefetchSnapshot,
-  ): number {
-    const weights = { ...this.scoringDefaults, ...snapshot.scoringWeights };
-    const absDistance = Math.abs(distanceIndex);
-
-    const v = this.temporalProximityScore(absDistance, weights);
-    const d = this.directionScore(distanceIndex, snapshot, weights);
-    const b = this.bufferShortfallScore(distanceIndex, snapshot, weights);
-    const i = this.interactionScore(absDistance, snapshot, weights);
-    const q = this.qualityUrgencyScore(task, snapshot, weights);
-    const s = this.sizeHintPenalty(task, weights);
-    const e = this.etaPenalty(task, weights);
-
-    return Math.max(0, Math.min(200, v + d + b + i + q + s + e));
-  }
-
-  /**
-   * Temporal-proximity score (proxy for viewport-salience V).
-   *
-   * All visible tiles in the current viewport share the same spatial
-   * importance, so temporal distance from the target frame serves as
-   * the primary salience proxy: frames closer to the playhead are
-   * more likely to be displayed next.
-   *
-   * | distance | level | score      |
-   * |----------|-------|------------|
-   * | 0        | 3     | 3 * W_v    |
-   * | 1        | 2     | 2 * W_v    |
-   * | 2        | 1     | 1 * W_v    |
-   * | >=3      | 0     | 0          |
-   */
-  private temporalProximityScore(
-    absDistance: number,
-    weights: Required<ScoringWeights>,
-  ): number {
-    if (absDistance === 0) return 3 * weights.viewportSalience;
-    if (absDistance === 1) return 2 * weights.viewportSalience;
-    if (absDistance === 2) return 1 * weights.viewportSalience;
-    return 0;
-  }
-
-  /**
-   * Playback-direction alignment (D).
-   *
-   * Forward frames get a bonus during forward playback; backward
-   * frames get a mild penalty.  Paused mode returns 0.
-   */
-  private directionScore(
-    distanceIndex: number,
-    snapshot: PrefetchSnapshot,
-    weights: Required<ScoringWeights>,
-  ): number {
-    if (!snapshot.playing) return 0;
-
-    const direction = Math.sign(snapshot.playbackRate) || 1;
-    const isForward = Math.sign(distanceIndex) === direction;
-
-    return isForward ? weights.direction : -Math.ceil(weights.direction / 2);
-  }
-
-  /**
-   * Buffer-shortfall pressure (B).
-   *
-   * When the contiguous cached buffer ahead of the playhead is below
-   * the target, all forward-frame tasks receive a proportional boost
-   * so the prefetcher closes the gap faster.
-   */
-  private bufferShortfallScore(
-    distanceIndex: number,
-    snapshot: PrefetchSnapshot,
-    weights: Required<ScoringWeights>,
-  ): number {
-    if (distanceIndex <= 0) return 0;
-
-    const buf = snapshot.bufferState;
-    if (!buf || buf.targetAhead <= 0) return 0;
-
-    const shortfall = Math.max(0, 1 - buf.bufferedAhead / buf.targetAhead);
-
-    return shortfall > 0 ? Math.round(weights.bufferShortfall * shortfall) : 0;
-  }
-
-  /**
-   * Interaction override (I).
-   *
-   * During seek / scrub the requested frame's tiles are boosted
-   * heavily while tiles far from the playhead are penalised so they
-   * don't compete for bandwidth.
-   */
-  private interactionScore(
-    absDistance: number,
-    snapshot: PrefetchSnapshot,
-    weights: Required<ScoringWeights>,
-  ): number {
-    const mode = snapshot.interactionMode;
-
-    if (mode === "idle" || mode === "playing") return 0;
-
-    if (absDistance <= 1) return Math.round(2 * weights.interaction);
-    if (absDistance === 2) return Math.round(0.4 * weights.interaction);
-
-    return -Math.round(1.2 * weights.interaction);
-  }
-
-  /**
-   * Quality-urgency score (Q).
-   *
-   * Preview→full upgrades are the highest quality priority because
-   * they are the cheapest path to a better-looking frame.  Fresh
-   * previews get a smaller boost when current-frame coverage is below
-   * 30 %, encouraging at least *something* to appear quickly.
-   */
-  private qualityUrgencyScore(
-    task: TileTask,
-    snapshot: PrefetchSnapshot,
-    weights: Required<ScoringWeights>,
-  ): number {
-    if (task.quality === "full") {
-      const existing = this.tileCache.get(task.frameId, task.x, task.y, task.z);
-
-      if (existing && existing.quality === "preview") {
-        return weights.qualityUpgrade;
-      }
-
-      return 0;
-    }
-
-    const coverage = snapshot.coverage ?? 1;
-
-    if (coverage < 0.3 && task.quality === "preview") {
-      return weights.qualityFreshPreview;
-    }
-
-    return 0;
-  }
-
-  /**
-   * Estimated-size penalty (W_s · log₂).
-   *
-   * Larger tiles cost more time and bandwidth.  The penalty grows
-   * sub-linearly via log₂ so very large tiles are not completely
-   * starved.
-   *
-   * Byte estimate sources (in order of preference):
-   * 1. Frame-level `byteSizeHint` (carried on the catalog entry).
-   *    Because this is a whole-COG size rather than a per-tile size,
-   *    the log₂-scaled penalty naturally handles the magnitude
-   *    difference between frame-level and tile-level sizes.
-   * 2. Per-frame EWMA of previously-fetched tile `byteLength` values.
-   * 3. No penalty when nothing is known.
-   */
-  private sizeHintPenalty(
-    task: TileTask,
-    weights: Required<ScoringWeights>,
-  ): number {
-    if (weights.sizeHintPerBit <= 0) return 0;
-
-    const estimatedBytes = task.byteSizeHint ?? this.frameAvgBytes.get(task.frameId) ?? 0;
-
-    if (estimatedBytes <= 0) return 0;
-
-    const penalty = Math.round(
-      weights.sizeHintPerBit * Math.log2(estimatedBytes + 1),
-    );
-
-    return -Math.min(15, penalty);
-  }
-
-  /**
-   * ETA penalty (W_e · estimatedETA).
-   *
-   * Estimates per-tile fetch time using the EWMA telemetry:
-   * `estimatedETA ≈ rttEWMA + (bytes / throughputEWMA) * 1000`.
-   *
-   * Tasks whose tiles are expected to take longer are deprioritised.
-   * When no telemetry has been collected yet (`rttEWMA === 0`) or the
-   * weight is disabled (`etaPerMs <= 0`), returns 0.
-   *
-   * Byte estimate sources (in order of preference):
-   * 1. Task's `byteSizeHint` (from the catalog entry).
-   * 2. Per-frame EWMA of previously-fetched `byteLength` values.
-   * 3. No per-tile size estimate → uses bare `rttEWMA` as fallback.
-   */
-  private etaPenalty(
-    task: TileTask,
-    weights: Required<ScoringWeights>,
-  ): number {
-    if (this.rttEWMA <= 0 || weights.etaPerMs <= 0) return 0;
-
-    const estimatedBytes =
-      task.byteSizeHint ?? this.frameAvgBytes.get(task.frameId) ?? 0;
-
-    let eta = this.rttEWMA;
-
-    if (estimatedBytes > 0 && this.throughputEWMA > 0) {
-      eta += (estimatedBytes / this.throughputEWMA) * 1000;
-    }
-
-    const penalty = Math.round(weights.etaPerMs * eta);
-
-    return -Math.min(20, penalty);
-  }
-
-  private qualityForFrame(
-    mode: InteractionMode,
-    _distanceIndex: number,
-    policy: QualityPolicy,
-  ): { quality: TileQuality } {
-    if (policy.lowResFirst === false) {
-      return { quality: "full" };
-    }
-
-    // Progressive overview loading (coarser zoom bias) is intentionally
-    // disabled in the render path — see _getTileDataCallback comment in
-    // TimeSequenceTileLayer. Tasks are always fetched at the exact tile
-    // coordinates; "preview" vs "full" here affects only scoring.
-    if (mode === "scrubbing" || mode === "seeking") {
-      return { quality: "preview" };
-    }
-
-    return { quality: "preview" };
-  }
-
-  private pruneQueue(scheduledIds: Set<string>): void {
-    const nextQueue: TileTask[] = [];
-    const nextKeys = new Set<string>();
-
-    for (const task of this.queue) {
-      if (!scheduledIds.has(task.frameId)) {
-        continue;
-      }
-
-      if (this.tileCache.get(task.frameId, task.x, task.y, task.z)) {
-        continue;
-      }
-
-      const key = taskKey(task.frameId, task.x, task.y, task.z);
-
-      if (nextKeys.has(key)) {
-        continue;
-      }
-
-      nextQueue.push(task);
-      nextKeys.add(key);
-    }
-
-    this.queue = nextQueue;
-    this.queuedKeys = nextKeys;
-  }
-}
-
-function taskKey(frameId: string, x: number, y: number, z: number): string {
-  return `${frameId}:${x}:${y}:${z}`;
 }

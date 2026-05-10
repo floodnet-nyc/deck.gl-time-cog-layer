@@ -7,6 +7,22 @@ export {
   resolveFrameForTime,
 } from "./util/frame-catalog.js";
 export { FramePrefetcher } from "./frame-prefetcher.js";
+export { TaskQueue, taskKey } from "./task-queue.js";
+export type { TileTask, TileCoord } from "./task-queue.js";
+export { GeoTIFFRegistry } from "./util/geotiff-registry.js";
+export {
+  scoreTask,
+  temporalProximityScore,
+  directionScore,
+  bufferShortfallScore,
+  interactionScore,
+  qualityUrgencyScore,
+  sizeHintPenalty,
+  etaPenalty,
+  qualityForTask,
+  FALLBACK_WEIGHTS,
+  type ScoringContext,
+} from "./util/task-scorer.js";
 export { scheduleFrameWindow } from "./util/frame-scheduler.js";
 export type { CachedTile, TileCachePolicy, TileCacheStats, TileQuality } from "./sequence-tile-cache.js";
 export { SequenceTileCache } from "./sequence-tile-cache.js";
