@@ -3,6 +3,7 @@ import type {
   LayersList,
   UpdateParameters,
 } from "@deck.gl/core";
+import type { Texture, Device } from "@luma.gl/core";
 import { CompositeLayer } from "@deck.gl/core";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import type { DecoderPool, GeoTIFF, Overview } from "@developmentseed/geotiff";
@@ -155,6 +156,8 @@ const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
 export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   static layerName = "TimeCOGLayer";
 
+  declare state: CompositeLayer["state"] & TimeCOGLayerState;
+
   /**
    * Creates the three shared infrastructure objects — `tileCache`,
    * `prefetcher`, and `visibleTileRef` — that live for the full
@@ -192,7 +195,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
   updateState(params: UpdateParameters<this>): void {
     const { props, oldProps } = params;
-    const state = this.state as TimeCOGLayerState;
+    const state = this.state;
     const framesChanged = props.frames !== oldProps.frames;
     const cachePolicyChanged = props.cachePolicy !== oldProps.cachePolicy;
     const timeChanged = props.currentTime !== oldProps.currentTime;
@@ -243,7 +246,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
    * delivering an immediate preview before the full-res upgrade.
    */
   renderLayers(): Layer | LayersList | null {
-    const state = this.state as TimeCOGLayerState;
+    const state = this.state;
     const frame = state.displayFrame;
 
     if (!frame) {
@@ -276,8 +279,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
         ...passThrough,
         id: `${this.props.id}-tiles`,
         geotiff: initialUrl,
-        getTileData: this.props.getTileData as never,
-        renderTile: this.props.renderTile as never,
+        getTileData: this.props.getTileData,
+        renderTile: this.props.renderTile,
         sequenceTileCache: state.tileCache,
         currentFrameId: frame.id,
         currentFrameUrl: frame.url,
@@ -308,8 +311,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       ...passThrough,
       id: `${this.props.id}-tiles`,
       geotiff: initialUrl,
-      getTileData: this.props.getTileData as never,
-      renderTile: this.props.renderTile as never,
+      getTileData: this.props.getTileData,
+      renderTile: this.props.renderTile,
       sequenceTileCache: state.tileCache,
       currentFrameId: frame.id,
       currentFrameUrl: frame.url,
@@ -325,7 +328,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
    * Aborts all in-flight prefetch tasks and destroys GPU textures.
    */
   finalizeState(): void {
-    const state = this.state as TimeCOGLayerState;
+    const state = this.state;
 
     if (state.upgradeTimer) {
       clearTimeout(state.upgradeTimer);
@@ -349,7 +352,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   private updateFrameState(
     catalog: NormalizedTimeCOGFrame[],
   ): void {
-    const state = this.state as TimeCOGLayerState;
+    const state = this.state;
     const currentTimeMs = parseTimeValue(this.props.currentTime);
     const playing = this.props.playing ?? false;
     const resolution = resolveFrameForTime(
@@ -422,7 +425,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       const idleMs = policy.fullResUpgradeIdleMs ?? 150;
 
       state.upgradeTimer = setTimeout(() => {
-        const s = this.state as TimeCOGLayerState;
+        const s = this.state;
 
         if (s.interactionMode === "seeking" || s.interactionMode === "scrubbing") {
           s.interactionMode = "idle";
@@ -511,7 +514,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
   /** Fire `onFrameReady` if the display frame achieves full tile coverage for the first time. */
   private checkFrameReady(frame: NormalizedTimeCOGFrame): void {
-    const state = this.state as TimeCOGLayerState;
+    const state = this.state;
 
     if (state.readyFrameIds.has(frame.id)) {
       return;
@@ -530,7 +533,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
   /** Compute the fraction of visible tiles cached at full quality for a frame (0–1). */
   private computeCoverage(frame: NormalizedTimeCOGFrame | null): number {
-    const state = this.state as TimeCOGLayerState;
+    const state = this.state;
 
     if (!frame) {
       return 1;
@@ -571,7 +574,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     displayFrame: NormalizedTimeCOGFrame | null,
     scheduledFrames: NormalizedTimeCOGFrame[],
   ): { bufferedAhead: number; bufferedBehind: number; targetAhead: number } {
-    const state = this.state as TimeCOGLayerState;
+    const state = this.state;
     const tiles = state.visibleTileRef.tiles;
 
     const targetIndex = displayFrame
@@ -648,7 +651,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     displayFrame: NormalizedTimeCOGFrame | null;
     scheduledFrames: NormalizedTimeCOGFrame[];
   }): void {
-    const state = this.state as TimeCOGLayerState;
+    const state = this.state;
     const displayFrame = snapshot?.displayFrame ?? state.displayFrame;
     const scheduledFrames = snapshot?.scheduledFrames ?? state.scheduledFrames;
 
@@ -683,15 +686,15 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       getUserTileData: this.props.getTileData as (
         image: GeoTIFF | Overview,
         options: {
-          device: import("@luma.gl/core").Device;
+          device: Device;
           x: number;
           y: number;
           signal?: AbortSignal;
           pool: DecoderPool;
         },
       ) => Promise<{
-        texture: import("@luma.gl/core").Texture;
-        mask?: import("@luma.gl/core").Texture;
+        texture: Texture;
+        mask?: Texture;
         byteLength: number;
         width: number;
         height: number;
@@ -699,10 +702,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       pool,
       playing: this.props.playing ?? false,
       playbackRate: this.props.playbackRate ?? 0,
-      signal:
-        (this.props as Record<string, unknown>).signal as
-          | AbortSignal
-          | undefined,
+      signal: this.props.signal,
       interactionMode: state.interactionMode,
       qualityPolicy: this.props.qualityPolicy ?? {},
     });
@@ -767,15 +767,9 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     return {
       ...cogProps,
       loadOptions: {
-        ...(
-          cogProps as Record<string, unknown>
-        ).loadOptions as Record<string, unknown>,
+        ...cogProps.loadOptions,
         fetch: {
-          ...(
-            (
-              cogProps as Record<string, unknown>
-            ).loadOptions as Record<string, unknown>
-          )?.fetch as Record<string, unknown>,
+          ...cogProps.loadOptions?.fetch,
           ...frame.requestInit,
         },
       },
@@ -819,7 +813,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       inFlightKeys: new Set<string>(),
       abortedKeys: new Set<string>(),
     };
-    const state = this.state as TimeCOGLayerState | undefined;
+    const state = this.state;
 
     if (!state || !state.tileCache || !state.visibleTileRef) {
       return empty;

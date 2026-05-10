@@ -12,7 +12,7 @@ import type {
   MinimalTileData,
 } from "@developmentseed/deck.gl-geotiff";
 import { COGLayer } from "@developmentseed/deck.gl-geotiff";
-import type { GeoTIFF, Overview, DecoderPool } from "@developmentseed/geotiff";
+import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { openGeoTIFF } from "./util/geotiff-source.js";
 import type { TileQuality, SequenceTileCache } from "./sequence-tile-cache.js";
@@ -53,6 +53,8 @@ export type TimeSequenceTileLayerProps = {
 
   /** Optional callback fired whenever the visible tile set changes. */
   onVisibleTilesChange?: () => void;
+
+  onViewportLoad?: ((tiles: Tile2DHeader<Record<string, unknown>>[]) => void);
 };
 
 const TIME_SEQ_TILE_LAYER_NAME = "TimeSequenceTileLayer";
@@ -135,8 +137,7 @@ export class TimeSequenceTileLayer<
       return null;
     }
 
-    const seqProps = this.props as TimeSequenceTileLayerProps;
-    const { visibleTileRef, currentFrameId, onVisibleTilesChange } = seqProps;
+    const { visibleTileRef, currentFrameId, onVisibleTilesChange } = this.props;
 
     class TilesetFactory extends RasterTileset2D {
       constructor(
@@ -153,14 +154,9 @@ export class TimeSequenceTileLayer<
         rt: (data: DataT) => RenderTileResult | null,
       ) => Layer[];
     };
-    const updateTriggers = (this.props as Record<string, unknown>)
-      .updateTriggers as Record<string, unknown> | undefined;
-    const userSignal = (this.props as Record<string, unknown>)
-      .signal as AbortSignal | undefined;
-    const userOnViewportLoad = (this.props as Record<string, unknown>)
-      .onViewportLoad as
-        | ((tiles: Tile2DHeader<Record<string, unknown>>[]) => void)
-        | undefined;
+    const updateTriggers = this.props.updateTriggers;
+    const userSignal = this.props.signal;
+    const userOnViewportLoad = this.props.onViewportLoad;
 
     const renderSubLayers = (
       subProps: Record<string, unknown>,
@@ -193,37 +189,16 @@ export class TimeSequenceTileLayer<
         all: Math.round(this.context.viewport?.zoom ?? 0),
         renderSubLayers: updateTriggers?.renderTile,
       },
-      tileSize: (this.props as Record<string, unknown>).tileSize as
-        | number
-        | undefined,
-      zoomOffset: (this.props as Record<string, unknown>).zoomOffset as
-        | number
-        | undefined,
-      maxZoom: (this.props as Record<string, unknown>).maxZoom as
-        | number
-        | undefined,
-      minZoom: (this.props as Record<string, unknown>).minZoom as
-        | number
-        | undefined,
-      extent: (this.props as Record<string, unknown>).extent as
-        | [number, number, number, number]
-        | undefined,
-      debounceTime: (this.props as Record<string, unknown>).debounceTime as
-        | number
-        | undefined,
-      maxCacheSize: (this.props as Record<string, unknown>).maxCacheSize as
-        | number
-        | undefined,
-      maxCacheByteSize: (this.props as Record<string, unknown>)
-        .maxCacheByteSize as number | undefined,
-      maxRequests: (this.props as Record<string, unknown>).maxRequests as
-        | number
-        | undefined,
-      refinementStrategy:
-        (
-          (this.props as Record<string, unknown>)
-            .refinementStrategy as never
-        ) ?? "no-overlap",
+      tileSize: this.props.tileSize,
+      zoomOffset: this.props.zoomOffset,
+      maxZoom: this.props.maxZoom,
+      minZoom: this.props.minZoom,
+      extent: this.props.extent,
+      debounceTime: this.props.debounceTime,
+      maxCacheSize: this.props.maxCacheSize,
+      maxCacheByteSize: this.props.maxCacheByteSize,
+      maxRequests: this.props.maxRequests,
+      refinementStrategy: this.props.refinementStrategy ?? "no-overlap",
       onViewportLoad: (loadedTiles: Tile2DHeader<Record<string, unknown>>[]) => {
         if (visibleTileRef) {
           visibleTileRef.tiles = loadedTiles.map((t) => ({
@@ -258,8 +233,7 @@ export class TimeSequenceTileLayer<
       tile: TileLoadProps,
       options: { device: Device; signal?: AbortSignal },
     ) => {
-      const seqProps = this.props as TimeSequenceTileLayerProps;
-      const { currentFrameId, currentFrameUrl, currentFrameRequestInit } = seqProps;
+      const { currentFrameId, currentFrameUrl, currentFrameRequestInit } = this.props;
       const { x, y, z } = tile.index;
 
       const hit = tileCache.get(currentFrameId, x, y, z);
@@ -311,10 +285,7 @@ export class TimeSequenceTileLayer<
         x,
         y,
         signal: options.signal,
-        pool:
-          (
-            this.props as unknown as { pool?: DecoderPool }
-          ).pool ?? defaultDecoderPool(),
+        pool: this.props.pool ?? defaultDecoderPool(),
       };
 
       let result: DataT;
