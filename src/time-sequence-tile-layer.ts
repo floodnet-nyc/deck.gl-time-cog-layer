@@ -263,6 +263,8 @@ export class TimeSequenceTileLayer<
       const hit = tileCache.get(currentFrameId, x, y, z);
 
       if (hit) {
+        tileCache.markDisplayed(currentFrameId, x, y, z);
+
         return {
           texture: hit.texture,
           mask: hit.mask,

@@ -23,6 +23,8 @@ export type CachedTile = {
   quality: TileQuality;
   frameId: string;
   lastAccessMs: number;
+  wasDisplayed: boolean;
+  firstCachedMs: number;
 };
 
 export type TileCacheStats = {
@@ -32,6 +34,12 @@ export type TileCacheStats = {
   protectedFrameIds: string[];
   hitCount: number;
   missCount: number;
+  /** Tiles evicted that were never displayed. */
+  evictedNeverDisplayed: number;
+  /** Bytes of evicted tiles that were never displayed. */
+  wastedBytes: number;
+  /** Cumulative tiles evicted (for rate computation). */
+  evictedTotal: number;
 };
 
 /**
@@ -92,6 +100,9 @@ export class SequenceTileCache {
   private policy: TileCachePolicy = {};
   private hitCount = 0;
   private missCount = 0;
+  private evictedNeverDisplayed = 0;
+  private wastedBytes = 0;
+  private evictedTotal = 0;
 
   constructor(policy: TileCachePolicy = {}) {
     this.policy = policy;
@@ -183,7 +194,7 @@ export class SequenceTileCache {
     x: number,
     y: number,
     z: number,
-    tile: Omit<CachedTile, "frameId" | "lastAccessMs">,
+    tile: Omit<CachedTile, "frameId" | "lastAccessMs" | "wasDisplayed" | "firstCachedMs">,
   ): void {
     const key = tileKey(frameId, x, y, z);
     const existing = this.tiles.get(key);
@@ -204,6 +215,8 @@ export class SequenceTileCache {
       z,
       frameId,
       lastAccessMs: Date.now(),
+      wasDisplayed: false,
+      firstCachedMs: Date.now(),
     });
 
     this.evict();
@@ -267,6 +280,9 @@ export class SequenceTileCache {
       protectedFrameIds: [...this.protected],
       hitCount: this.hitCount,
       missCount: this.missCount,
+      evictedNeverDisplayed: this.evictedNeverDisplayed,
+      wastedBytes: this.wastedBytes,
+      evictedTotal: this.evictedTotal,
     };
   }
 
@@ -294,6 +310,21 @@ export class SequenceTileCache {
   /** Record a cache miss from a caller that will proceed to fetch the tile. */
   recordMiss(): void {
     this.missCount += 1;
+  }
+
+  /** Mark a tile as having been displayed to the user.  Idempotent. */
+  markDisplayed(
+    frameId: string,
+    x: number,
+    y: number,
+    z: number,
+  ): void {
+    const key = tileKey(frameId, x, y, z);
+    const tile = this.tiles.get(key);
+
+    if (tile) {
+      tile.wasDisplayed = true;
+    }
   }
 
   private evict(): void {
@@ -468,6 +499,13 @@ export class SequenceTileCache {
 
     if (tile.mask) {
       this.retiredTextures.add(tile.mask);
+    }
+
+    this.evictedTotal += 1;
+
+    if (!tile.wasDisplayed) {
+      this.evictedNeverDisplayed += 1;
+      this.wastedBytes += tile.byteLength;
     }
   }
 }

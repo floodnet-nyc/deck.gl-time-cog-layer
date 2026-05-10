@@ -635,6 +635,9 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       throughputEWMA: prefetchStats.throughputEWMA,
       abortRate: prefetchStats.abortRate,
       cacheHitRate: totalAccesses > 0 ? tileStats.hitCount / totalAccesses : 0,
+      wastedBytes: tileStats.wastedBytes,
+      evictedNeverDisplayed: tileStats.evictedNeverDisplayed,
+      evictedTotal: tileStats.evictedTotal,
     };
 
     this.props.onBufferStateChange?.(bufferState);
@@ -794,6 +797,12 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     playheadIndex: number;
     maxZoom: number;
     tileGrid: Record<number, { maxX: number; maxY: number }>;
+    wastedBytes: number;
+    evictedNeverDisplayed: number;
+    abortedTasks: number;
+    scheduledFrameIds: Set<string>;
+    inFlightKeys: Set<string>;
+    abortedKeys: Set<string>;
   } {
     const empty = {
       tileCache: new SequenceTileCache(),
@@ -803,12 +812,21 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       playheadIndex: 0,
       maxZoom: 0,
       tileGrid: {} as Record<number, { maxX: number; maxY: number }>,
+      wastedBytes: 0,
+      evictedNeverDisplayed: 0,
+      abortedTasks: 0,
+      scheduledFrameIds: new Set<string>(),
+      inFlightKeys: new Set<string>(),
+      abortedKeys: new Set<string>(),
     };
     const state = this.state as TimeCOGLayerState | undefined;
 
     if (!state || !state.tileCache || !state.visibleTileRef) {
       return empty;
     }
+
+    const tileStats = state.tileCache.stats();
+    const prefetchStats = state.prefetcher.stats();
 
     const tileGrid: Record<number, { maxX: number; maxY: number }> = {};
 
@@ -851,6 +869,12 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       playheadIndex,
       maxZoom,
       tileGrid,
+      wastedBytes: tileStats.wastedBytes,
+      evictedNeverDisplayed: tileStats.evictedNeverDisplayed,
+      abortedTasks: prefetchStats.totalAborted,
+      scheduledFrameIds: new Set(state.scheduledFrames.map((f) => f.id)),
+      inFlightKeys: new Set(state.prefetcher.getInFlightKeys()),
+      abortedKeys: state.prefetcher.getAbortedKeys(),
     };
   }
 }

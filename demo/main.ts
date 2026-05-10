@@ -305,7 +305,12 @@ function render(): void {
           maxFrames: 120,
         },
     onStats: (stats) => {
-      statsOutput.value = `${stats.readyFrameCount}/${stats.frameCount} ready, ${stats.scheduledFrameCount} scheduled`;
+      const wastedKb = Math.round(stats.wastedBytes / 1024);
+      statsOutput.value =
+        `${stats.readyFrameCount}/${stats.frameCount} ready, ` +
+        `${stats.scheduledFrameCount} scheduled | ` +
+        `waste: ${wastedKb} kB | ` +
+        `evicted: ${stats.evictedNeverDisplayed} never-shown / ${stats.evictedTotal} total`;
     },
   });
 

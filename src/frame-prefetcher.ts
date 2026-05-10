@@ -121,6 +121,7 @@ export class FramePrefetcher {
   private throughputEWMA = 0;
   private totalTasks = 0;
   private abortedTasks = 0;
+  private abortedKeys = new Set<string>();
   private uploadsThisFrame = 0;
   private maxDecodeTasks: number;
   private maxGpuUploads: number;
@@ -178,6 +179,7 @@ export class FramePrefetcher {
     }
 
     for (const key of toAbort) {
+      this.abortedKeys.add(key);
       this.inFlight.delete(key);
     }
 
@@ -319,7 +321,8 @@ export class FramePrefetcher {
   abortAll(): void {
     this.abortedTasks += this.inFlight.size;
 
-    for (const entry of this.inFlight.values()) {
+    for (const [key, entry] of this.inFlight) {
+      this.abortedKeys.add(key);
       entry.controller.abort();
     }
     this.inFlight.clear();
@@ -333,11 +336,22 @@ export class FramePrefetcher {
     this.geotiffs.clear();
   }
 
+  /** Return the keys of all currently in-flight prefetch tasks. */
+  getInFlightKeys(): string[] {
+    return [...this.inFlight.keys()];
+  }
+
+  /** Return the keys of all tasks aborted since the layer was created. */
+  getAbortedKeys(): Set<string> {
+    return this.abortedKeys;
+  }
+
   stats(): {
     prefetchTaskCount: number;
     rttEWMA: number;
     throughputEWMA: number;
     abortRate: number;
+    totalAborted: number;
   } {
     const denominator = this.totalTasks || 1;
 
@@ -346,6 +360,7 @@ export class FramePrefetcher {
       rttEWMA: this.rttEWMA,
       throughputEWMA: this.throughputEWMA,
       abortRate: this.abortedTasks / denominator,
+      totalAborted: this.abortedTasks,
     };
   }
 
@@ -450,6 +465,7 @@ export class FramePrefetcher {
     } catch (err) {
       if ((err as Error)?.name === "AbortError") {
         this.abortedTasks += 1;
+        this.abortedKeys.add(key);
       } else if (!isMissingTileError(err)) {
         console.warn("FramePrefetcher: tile fetch failed", err);
       }

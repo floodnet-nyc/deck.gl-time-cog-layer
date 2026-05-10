@@ -184,6 +184,12 @@ export type TimeCOGStats = {
   abortRate: number;
   /** Cache hit rate (0–1) across all tile lookups. */
   cacheHitRate: number;
+  /** Bytes of evicted tiles that were never displayed. */
+  wastedBytes: number;
+  /** Tiles evicted that were never displayed. */
+  evictedNeverDisplayed: number;
+  /** Cumulative tiles evicted (for computing waste ratio). */
+  evictedTotal: number;
 };
 
 export type TimeCOGFrameResolution = {

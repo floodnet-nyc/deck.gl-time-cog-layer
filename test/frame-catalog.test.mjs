@@ -1772,3 +1772,51 @@ test("scoring: custom scoringWeights in schedulerPolicy override defaults via sn
   assert.ok(prefetcher.queue.length >= 1, "should have tasks");
   assert.ok(prefetcher.queue[0].priority >= 100, "snapshot override should use high weights");
 });
+
+// ─── Eviction efficiency metrics ───
+
+test("markDisplayed sets wasDisplayed flag on cached tile", () => {
+  const cache = new SequenceTileCache();
+  cache.put("f1", 0, 0, 0, { texture: { destroy() {} }, byteLength: 1, width: 1, height: 1, quality: "full" });
+
+  cache.markDisplayed("f1", 0, 0, 0);
+  const tile = cache.get("f1", 0, 0, 0);
+  assert.equal(tile.wasDisplayed, true);
+});
+
+test("eviction tallies never-displayed tiles and wasted bytes", () => {
+  const cache = new SequenceTileCache({ maxTileEntries: 1 });
+
+  cache.put("f1", 0, 0, 0, { texture: { destroy() {} }, byteLength: 100, width: 1, height: 1, quality: "full" });
+  cache.markDisplayed("f1", 0, 0, 0);
+
+  cache.put("f2", 0, 0, 0, { texture: { destroy() {} }, byteLength: 300, width: 1, height: 1, quality: "preview" });
+
+  const stats = cache.stats();
+  assert.equal(stats.evictedTotal, 1, "should have evicted exactly one tile");
+  assert.equal(stats.wastedBytes, 0, "displayed tile f1 should not count as wasted");
+  assert.equal(stats.evictedNeverDisplayed, 0, "evictedNeverDisplayed should be 0 when only displayed tile was evicted");
+
+  const cache2 = new SequenceTileCache({ maxTileEntries: 1 });
+
+  cache2.put("never", 0, 0, 0, { texture: { destroy() {} }, byteLength: 200, width: 1, height: 1, quality: "full" });
+
+  cache2.put("f2", 0, 0, 0, { texture: { destroy() {} }, byteLength: 300, width: 1, height: 1, quality: "preview" });
+
+  const stats2 = cache2.stats();
+  assert.equal(stats2.evictedTotal, 1, "should have evicted exactly one tile");
+  assert.equal(stats2.wastedBytes, 200, "never-displayed evicted tile should count as wasted");
+  assert.equal(stats2.evictedNeverDisplayed, 1, "evictedNeverDisplayed should be 1 when tile was never shown");
+});
+
+test("displayed tiles do not count as wasted when evicted", () => {
+  const cache = new SequenceTileCache({ maxTileEntries: 1 });
+
+  cache.put("f1", 0, 0, 0, { texture: { destroy() {} }, byteLength: 100, width: 1, height: 1, quality: "full" });
+  cache.markDisplayed("f1", 0, 0, 0);
+  cache.put("f2", 0, 0, 0, { texture: { destroy() {} }, byteLength: 200, width: 1, height: 1, quality: "full" });
+
+  const stats = cache.stats();
+  assert.equal(stats.wastedBytes, 0, "displayed tiles should not count as wasted when evicted");
+  assert.equal(stats.evictedNeverDisplayed, 0, "evictedNeverDisplayed should be 0 when tile was shown");
+});

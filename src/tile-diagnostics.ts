@@ -4,8 +4,9 @@ import type { SequenceTileCache } from "./sequence-tile-cache.js";
  * Snapshot of tile state consumed by {@link renderTileDiagnostics}.
  *
  * The snapshot bundles the shared cache, visible tile coordinates,
- * the catalog, and a playhead position so that the diagnostic canvas
- * can render a complete temporal minimap.
+ * the catalog, a playhead position, and efficiency counters so the
+ * diagnostic canvas can render a complete temporal minimap with
+ * waste/abort annotations.
  */
 export type TileDiagSnapshot = {
   tileCache: SequenceTileCache;
@@ -15,13 +16,28 @@ export type TileDiagSnapshot = {
   playheadIndex: number;
   maxZoom: number;
   tileGrid: Record<number, { maxX: number; maxY: number }>;
+  /** Cumulative bytes of evicted tiles that were never displayed. */
+  wastedBytes: number;
+  /** Cumulative tiles evicted that were never displayed. */
+  evictedNeverDisplayed: number;
+  /** Cumulative prefetch tasks aborted mid-flight. */
+  abortedTasks: number;
+  /** Frame IDs currently in the prefetch schedule window. */
+  scheduledFrameIds: Set<string>;
+  /** (frameId, x, y, z) keys currently in-flight. */
+  inFlightKeys: Set<string>;
+  /** (frameId, x, y, z) keys of aborted tasks. */
+  abortedKeys: Set<string>;
 };
 
 const COLORS = {
   cachedFull: "#4ade80",
+  cachedFullWasted: "#f59e0b",
   cachedPreview: "#60a5fa",
-  visible: "#facc15",
-  missing: "#ef4444",
+  cachedPreviewWasted: "#3b82f6",
+  aborted: "#ef4444",
+  inFlight: "#ec4899",
+  notScheduled: "#475569",
   empty: "#1a1a2e",
   gridLine: "#2a2a4e",
   frameLabel: "#8888aa",
@@ -130,19 +146,29 @@ export function renderTileDiagnostics(
       for (let ty = 0; ty < rows; ty += 1) {
         for (let tx = 0; tx < cols; tx += 1) {
           const cached = state.tileCache.get(frameId, tx, ty, z);
-          const visible = state.visibleTiles.some(
-            (v) => v.x === tx && v.y === ty && v.z === z,
-          );
 
           let color = COLORS.empty;
 
           if (cached) {
-            color =
-              cached.quality === "full"
+            if (cached.quality === "full") {
+              color = cached.wasDisplayed
                 ? COLORS.cachedFull
-                : COLORS.cachedPreview;
-          } else if (visible) {
-            color = COLORS.missing;
+                : COLORS.cachedFullWasted;
+            } else {
+              color = cached.wasDisplayed
+                ? COLORS.cachedPreview
+                : COLORS.cachedPreviewWasted;
+            }
+          } else {
+            const tileKey = `${frameId}:${tx}:${ty}:${z}`;
+
+            if (state.abortedKeys.has(tileKey)) {
+              color = COLORS.aborted;
+            } else if (state.inFlightKeys.has(tileKey)) {
+              color = COLORS.inFlight;
+            } else if (!state.scheduledFrameIds.has(frameId)) {
+              color = COLORS.notScheduled;
+            }
           }
 
           const cellX =
@@ -201,21 +227,25 @@ export function renderTileDiagnostics(
   ctx.textAlign = "left";
   ctx.textBaseline = "bottom";
 
-  const legendX = w - 120 * dpr;
-  const legendY = h - marginBottom - 46 * dpr;
+  const legendX = w - 140 * dpr;
+  const legendY = h - marginBottom - 70 * dpr;
 
   ctx.font = `${8 * dpr}px monospace`;
 
   const items = [
-    { color: COLORS.cachedFull, label: "cached full" },
-    { color: COLORS.cachedPreview, label: "cached preview" },
-    { color: COLORS.missing, label: "visible, loading" },
-    { color: COLORS.empty, label: "not loaded" },
+    { color: COLORS.cachedFull, label: "shown full" },
+    { color: COLORS.cachedFullWasted, label: "wasted full" },
+    { color: COLORS.cachedPreview, label: "shown preview" },
+    { color: COLORS.cachedPreviewWasted, label: "wasted preview" },
+    { color: COLORS.inFlight, label: "loading" },
+    { color: COLORS.aborted, label: "aborted" },
+    { color: COLORS.notScheduled, label: "unscheduled" },
+    { color: COLORS.empty, label: "empty" },
   ];
 
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i]!;
-    const ix = legendX + (i % 2) * 70 * dpr;
+    const ix = legendX + (i % 2) * 80 * dpr;
     const iy = legendY + Math.floor(i / 2) * 14 * dpr;
 
     ctx.fillStyle = item.color;
@@ -242,6 +272,16 @@ export function renderTileDiagnostics(
     `past: ${pastCached} cached | future: ${futureCached} prefetched`,
     marginLeft + 200 * dpr,
     h - 4 * dpr,
+  );
+
+  const wastedKb = Math.round(state.wastedBytes / 1024);
+  const aborted = state.abortedTasks;
+  const neverDisplayed = state.evictedNeverDisplayed;
+
+  ctx.fillText(
+    `waste: ${wastedKb} kB | aborted: ${aborted} | never-shown: ${neverDisplayed}`,
+    marginLeft,
+    h - 4 * dpr - 12 * dpr,
   );
 }
 
