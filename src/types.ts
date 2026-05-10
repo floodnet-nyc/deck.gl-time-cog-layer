@@ -215,6 +215,8 @@ export type TimeCOGLayerProps = COGLayerPassThroughProps & {
    * A value of 60 means 60× real-time (1 minute per second).
    */
   playbackRate?: number;
+  /** Maximum display frame rate during playback in frames per second (0 = unlimited).  Default 0. */
+  maxFrameRate?: number;
   missingFramePolicy?: MissingFramePolicy;
   bufferPolicy?: TimeCOGBufferPolicy;
   cachePolicy?: TimeCOGCachePolicy;

@@ -357,8 +357,39 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       currentTimeMs,
       this.props.missingFramePolicy ?? DEFAULT_MISSING_FRAME_POLICY,
     );
-    const targetIndex = resolution.targetFrame
-      ? findNearestFrameIndex(catalog, resolution.targetFrame.timeMs)
+
+    if (
+      resolution.displayFrame &&
+      (this.props.maxFrameRate ?? 0) > 0 &&
+      playing
+    ) {
+      const bucketIntervalMs =
+        (1000 / this.props.maxFrameRate!) *
+        Math.abs(this.props.playbackRate ?? 0);
+      const originTimeMs = catalog[0]?.timeMs ?? 0;
+      const resolvedBucket = Math.floor(
+        (resolution.displayFrame.timeMs - originTimeMs) / bucketIntervalMs,
+      );
+
+      if (state.lastDisplayedFrameId) {
+        const lastFrame = catalog.find(
+          (f) => f.id === state.lastDisplayedFrameId,
+        );
+
+        if (lastFrame) {
+          const lastBucket = Math.floor(
+            (lastFrame.timeMs - originTimeMs) / bucketIntervalMs,
+          );
+
+          if (lastBucket === resolvedBucket) {
+            resolution.displayFrame = lastFrame;
+          }
+        }
+      }
+    }
+
+    const targetIndex = resolution.displayFrame
+      ? findNearestFrameIndex(catalog, resolution.displayFrame.timeMs)
       : -1;
 
     const scheduledFrames = scheduleFrameWindow(
@@ -366,6 +397,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       targetIndex,
       this.props.bufferPolicy,
       this.props.playbackRate,
+      this.props.maxFrameRate,
       playing,
     ).map((sf) => sf.frame);
 

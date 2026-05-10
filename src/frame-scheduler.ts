@@ -33,6 +33,7 @@ export function scheduleFrameWindow(
   targetIndex: number,
   policy: TimeCOGBufferPolicy = {},
   playbackRate = 0,
+  maxFrameRate = 0,
   playing = false,
 ): ScheduledFrame[] {
   if (targetIndex < 0 || targetIndex >= catalog.length) {
@@ -44,25 +45,51 @@ export function scheduleFrameWindow(
   const direction = playing ? Math.sign(playbackRate) || 1 : 0;
   const before = direction < 0 ? forwardFrames : backwardFrames;
   const after = direction < 0 ? backwardFrames : forwardFrames;
-  const start = Math.max(0, targetIndex - before);
-  const end = Math.min(catalog.length - 1, targetIndex + after);
-  const scheduled: ScheduledFrame[] = [];
+  const bucketIntervalMs = maxFrameRate > 0 && playing
+    ? (1000 / maxFrameRate) * Math.abs(playbackRate)
+    : 0;
 
-  for (let index = start; index <= end; index += 1) {
-    const frame = catalog[index];
+  const backward = collectFrames(catalog, targetIndex, before + 1, -1, bucketIntervalMs);
+  const forward = collectFrames(catalog, targetIndex + 1, after, 1, bucketIntervalMs);
 
-    if (!frame) {
-      continue;
-    }
-
-    scheduled.push({
-      frame,
+  return [...backward.reverse(), ...forward]
+    .map((index) => ({
+      frame: catalog[index],
       index,
       priority: scoreFrame(index, targetIndex, direction),
-    });
+    }))
+    .sort((a, b) => b.priority - a.priority);
+}
+
+function collectFrames(
+  catalog: readonly NormalizedTimeCOGFrame[],
+  targetIndex: number,
+  count: number,
+  step: -1 | 1,
+  bucketIntervalMs: number,
+): number[] {
+  const indices: number[] = [];
+  const originTimeMs = catalog[0]?.timeMs ?? 0;
+
+  let lastBucket: number | undefined;
+
+  for (
+    let index = targetIndex;
+    index >= 0 && index < catalog.length && indices.length < count;
+    index += step
+  ) {
+    const frame = catalog[index];
+    if (!frame) continue;
+    const bucket = (
+      bucketIntervalMs ? 
+      Math.floor((frame.timeMs - originTimeMs) / bucketIntervalMs)
+      : frame.sourceIndex);
+    if (lastBucket === bucket) continue;
+    indices.push(index);
+    lastBucket = bucket;
   }
 
-  return scheduled.sort((a, b) => b.priority - a.priority);
+  return indices;
 }
 
 function scoreFrame(index: number, targetIndex: number, direction: number): number {

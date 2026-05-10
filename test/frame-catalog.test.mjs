@@ -71,13 +71,13 @@ test("schedules a playback-aware frame window", () => {
   ]);
 
   assert.deepEqual(
-    scheduleFrameWindow(catalog, 2, { backwardFrames: 1, forwardFrames: 2 }, 1, true).map(
+    scheduleFrameWindow(catalog, 2, { backwardFrames: 1, forwardFrames: 2 }, 1, 0, true).map(
       (entry) => entry.index,
     ),
     [2, 3, 1, 4],
   );
   assert.deepEqual(
-    scheduleFrameWindow(catalog, 2, { backwardFrames: 1, forwardFrames: 2 }, -1, true).map(
+    scheduleFrameWindow(catalog, 2, { backwardFrames: 1, forwardFrames: 2 }, -1, 0, true).map(
       (entry) => entry.index,
     ),
     [2, 1, 3, 0],
