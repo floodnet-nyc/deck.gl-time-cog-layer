@@ -270,6 +270,9 @@ export class FramePrefetcher {
 
     if (interactionMode === "idle") {
       for (const frame of snapshot.scheduledFrames) {
+        if (frame.id === snapshot.targetFrame.id) {
+          continue;
+        }
         for (const tile of snapshot.visibleTiles) {
           const exactKey = taskKey(frame.id, tile.x, tile.y, tile.z);
           const existing = this.tileCache.get(frame.id, tile.x, tile.y, tile.z);

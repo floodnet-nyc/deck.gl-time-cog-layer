@@ -204,6 +204,11 @@ export class SequenceTileCache {
         return;
       }
 
+      if (this.protected.has(frameId)) {
+        existing.lastAccessMs = Date.now();
+        return;
+      }
+
       this.retireTile(existing);
     }
 
@@ -449,6 +454,10 @@ export class SequenceTileCache {
 
     if (frameAccess.size === 0) {
       for (const tile of this.tiles.values()) {
+        if (this.protected.has(tile.frameId)) {
+          continue;
+        }
+
         frameAccess.set(
           tile.frameId,
           Math.min(frameAccess.get(tile.frameId) ?? Number.POSITIVE_INFINITY, tile.lastAccessMs),

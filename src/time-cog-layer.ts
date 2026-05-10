@@ -316,6 +316,14 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
         resolution.displayFrame.id,
         ...scheduledFrames.slice(0, 3).map((f) => f.id),
       ];
+
+      if (
+        state.lastDisplayedFrameId &&
+        state.lastDisplayedFrameId !== resolution.displayFrame.id
+      ) {
+        protectedFrames.push(state.lastDisplayedFrameId);
+      }
+
       state.tileCache.protect(protectedFrames);
     }
 
