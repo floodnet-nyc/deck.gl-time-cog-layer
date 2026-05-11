@@ -2,6 +2,7 @@ import type { Texture } from "@luma.gl/core";
 
 /** Whether a cached tile is a coarse preview or a full-resolution tile. */
 export type TileQuality = "preview" | "full";
+export type TileOrigin = "display" | "prefetch";
 
 export type Tile = {
   texture: Texture;
@@ -24,6 +25,7 @@ export type CachedTile = Tile & {
   y: number;
   z: number;
   quality: TileQuality;
+  origin: TileOrigin;
   frameId: string;
   lastAccessMs: number;
   wasDisplayed: boolean;
@@ -35,14 +37,37 @@ export type TileCacheStats = {
   totalBytes: number;
   frameIds: string[];
   protectedFrameIds: string[];
-  hitCount: number;
-  missCount: number;
-  /** Tiles evicted that were never displayed. */
-  evictedNeverDisplayed: number;
-  /** Bytes of evicted tiles that were never displayed. */
-  wastedBytes: number;
+  displayHitCount: number;
+  displayMissCount: number;
+  /** Resident prefetched tiles currently in cache. */
+  prefetchedResidentCount: number;
+  /** Resident prefetched bytes currently in cache. */
+  prefetchedResidentBytes: number;
+  /** Resident prefetched tiles that have not yet been displayed. */
+  prefetchedUnusedResidentCount: number;
+  /** Resident prefetched bytes that have not yet been displayed. */
+  prefetchedUnusedResidentBytes: number;
+  /** Cumulative prefetched tiles loaded into cache. */
+  prefetchedLoadedCount: number;
+  /** Cumulative prefetched bytes loaded into cache. */
+  prefetchedLoadedBytes: number;
+  /** Cumulative prefetched tiles later displayed. */
+  prefetchedUsedCount: number;
+  /** Cumulative prefetched bytes later displayed. */
+  prefetchedUsedBytes: number;
+  /** Prefetched tiles evicted before display. */
+  prefetchedWastedCount: number;
+  /** Prefetched bytes evicted before display. */
+  prefetchedWastedBytes: number;
   /** Cumulative tiles evicted (for rate computation). */
   evictedTotal: number;
+};
+
+type CacheInsert = Omit<
+  CachedTile,
+  "frameId" | "lastAccessMs" | "wasDisplayed" | "firstCachedMs" | "origin"
+> & {
+  origin?: TileOrigin;
 };
 
 /**
@@ -101,10 +126,14 @@ export class SequenceTileCache {
   private protected = new Set<string>();
   private retiredTextures = new Set<Texture>();
   private policy: TileCachePolicy = {};
-  private hitCount = 0;
-  private missCount = 0;
-  private evictedNeverDisplayed = 0;
-  private wastedBytes = 0;
+  private displayHitCount = 0;
+  private displayMissCount = 0;
+  private prefetchedLoadedCount = 0;
+  private prefetchedLoadedBytes = 0;
+  private prefetchedUsedCount = 0;
+  private prefetchedUsedBytes = 0;
+  private prefetchedWastedCount = 0;
+  private prefetchedWastedBytes = 0;
   private evictedTotal = 0;
 
   constructor(policy: TileCachePolicy = {}) {
@@ -219,7 +248,7 @@ export class SequenceTileCache {
     x: number,
     y: number,
     z: number,
-    tile: Omit<CachedTile, "frameId" | "lastAccessMs" | "wasDisplayed" | "firstCachedMs">,
+    tile: CacheInsert,
   ): void {
     const key = tileKey(frameId, x, y, z);
     const existing = this.tiles.get(key);
@@ -243,11 +272,23 @@ export class SequenceTileCache {
       x,
       y,
       z,
+      origin: tile.origin ?? "display",
       frameId,
       lastAccessMs: Date.now(),
       wasDisplayed: false,
       firstCachedMs: Date.now(),
     });
+
+    const inserted = this.tiles.get(key);
+
+    if (
+      inserted &&
+      inserted.origin === "prefetch" &&
+      (!existing || existing.origin !== "prefetch")
+    ) {
+      this.prefetchedLoadedCount += 1;
+      this.prefetchedLoadedBytes += inserted.byteLength;
+    }
 
     this.evict();
   }
@@ -297,10 +338,24 @@ export class SequenceTileCache {
   stats(): TileCacheStats {
     const frameIds = new Set<string>();
     let totalBytes = 0;
+    let prefetchedResidentCount = 0;
+    let prefetchedResidentBytes = 0;
+    let prefetchedUnusedResidentCount = 0;
+    let prefetchedUnusedResidentBytes = 0;
 
     for (const tile of this.tiles.values()) {
       frameIds.add(tile.frameId);
       totalBytes += tile.byteLength;
+
+      if (tile.origin === "prefetch") {
+        prefetchedResidentCount += 1;
+        prefetchedResidentBytes += tile.byteLength;
+
+        if (!tile.wasDisplayed) {
+          prefetchedUnusedResidentCount += 1;
+          prefetchedUnusedResidentBytes += tile.byteLength;
+        }
+      }
     }
 
     return {
@@ -308,10 +363,18 @@ export class SequenceTileCache {
       totalBytes,
       frameIds: [...frameIds],
       protectedFrameIds: [...this.protected],
-      hitCount: this.hitCount,
-      missCount: this.missCount,
-      evictedNeverDisplayed: this.evictedNeverDisplayed,
-      wastedBytes: this.wastedBytes,
+      displayHitCount: this.displayHitCount,
+      displayMissCount: this.displayMissCount,
+      prefetchedResidentCount,
+      prefetchedResidentBytes,
+      prefetchedUnusedResidentCount,
+      prefetchedUnusedResidentBytes,
+      prefetchedLoadedCount: this.prefetchedLoadedCount,
+      prefetchedLoadedBytes: this.prefetchedLoadedBytes,
+      prefetchedUsedCount: this.prefetchedUsedCount,
+      prefetchedUsedBytes: this.prefetchedUsedBytes,
+      prefetchedWastedCount: this.prefetchedWastedCount,
+      prefetchedWastedBytes: this.prefetchedWastedBytes,
       evictedTotal: this.evictedTotal,
     };
   }
@@ -331,15 +394,19 @@ export class SequenceTileCache {
 
     if (tile) {
       tile.lastAccessMs = Date.now();
-      this.hitCount += 1;
     }
 
     return tile;
   }
 
-  /** Record a cache miss from a caller that will proceed to fetch the tile. */
-  recordMiss(): void {
-    this.missCount += 1;
+  /** Record a display-path cache hit. */
+  recordDisplayHit(): void {
+    this.displayHitCount += 1;
+  }
+
+  /** Record a display-path cache miss. */
+  recordDisplayMiss(): void {
+    this.displayMissCount += 1;
   }
 
   /** Mark a tile as having been displayed to the user.  Idempotent. */
@@ -352,8 +419,13 @@ export class SequenceTileCache {
     const key = tileKey(frameId, x, y, z);
     const tile = this.tiles.get(key);
 
-    if (tile) {
+    if (tile && !tile.wasDisplayed) {
       tile.wasDisplayed = true;
+
+      if (tile.origin === "prefetch") {
+        this.prefetchedUsedCount += 1;
+        this.prefetchedUsedBytes += tile.byteLength;
+      }
     }
   }
 
@@ -532,14 +604,15 @@ export class SequenceTileCache {
   private retireTile(tile: CachedTile): void {
     this.evictedTotal += 1;
 
-    // XXX: Leave this function as is for now.
     if (!tile.wasDisplayed) {
       // TODO: can we rely on garbage collection? Don't want to interfere with TileLayer lifecycle
       tile.texture.destroy();
       tile.mask?.destroy();
 
-      this.evictedNeverDisplayed += 1;
-      this.wastedBytes += tile.byteLength;
+      if (tile.origin === "prefetch") {
+        this.prefetchedWastedCount += 1;
+        this.prefetchedWastedBytes += tile.byteLength;
+      }
       return;
     }
 

@@ -6,7 +6,7 @@ import type { SequenceTileCache } from "../sequence-tile-cache.js";
  * The snapshot bundles the shared cache, visible tile coordinates,
  * the catalog, a playhead position, and efficiency counters so the
  * diagnostic canvas can render a complete temporal minimap with
- * waste/abort annotations.
+ * prefetch-efficiency annotations.
  */
 export type TileDiagSnapshot = {
   tileCache: SequenceTileCache;
@@ -16,18 +16,24 @@ export type TileDiagSnapshot = {
   playheadIndex: number;
   maxZoom: number;
   tileGrid: Record<number, { maxX: number; maxY: number }>;
-  /** Cumulative bytes of evicted tiles that were never displayed. */
-  wastedBytes: number;
-  /** Cumulative tiles evicted that were never displayed. */
-  evictedNeverDisplayed: number;
+  /** Resident prefetched tiles not yet displayed. */
+  prefetchedUnusedResidentCount: number;
+  /** Resident prefetched bytes not yet displayed. */
+  prefetchedUnusedResidentBytes: number;
+  /** Cumulative prefetched tiles wasted before display. */
+  prefetchedWastedCount: number;
+  /** Cumulative prefetched bytes wasted before display. */
+  prefetchedWastedBytes: number;
+  /** Cumulative prefetched tiles later displayed. */
+  prefetchedUsedCount: number;
+  /** Cumulative prefetched tiles loaded into cache. */
+  prefetchedLoadedCount: number;
   /** Cumulative prefetch tasks aborted mid-flight. */
   abortedTasks: number;
   /** Frame IDs currently in the prefetch schedule window. */
   scheduledFrameIds: Set<string>;
   /** (frameId, x, y, z) keys currently in-flight. */
   inFlightKeys: Set<string>;
-  /** (frameId, x, y, z) keys of aborted tasks. */
-  abortedKeys: Set<string>;
 };
 
 const COLORS = {
@@ -35,7 +41,6 @@ const COLORS = {
   cachedFullWasted: "#f59e0b",
   cachedPreview: "#60a5fa",
   cachedPreviewWasted: "#3b82f6",
-  aborted: "#ef4444",
   inFlight: "#ec4899",
   notScheduled: "#475569",
   empty: "#1a1a2e",
@@ -53,11 +58,12 @@ const COLORS = {
  * - **X axis** = time (frame columns from the catalog window).
  * - **Y axis** = zoom level (coarsest at bottom, finest at top).
  * - **Color**  = per-tile state (green = cached full, blue = cached
- *   preview, red = visible-but-loading, dark = not loaded).
+ *   preview, orange = prefetched but not yet used, pink = loading,
+ *   dark = not loaded).
  *
  * A pink playhead line marks the current display frame.  Frame index
  * labels are shown every ~10 columns.  A legend and summary text
- * (`past: N cached | future: N prefetched`) answer the two key
+ * (`past: N cached | future: N cached`) answer the two key
  * operational questions: how far ahead are we, and how far back do we
  * retain.
  */
@@ -145,30 +151,31 @@ export function renderTileDiagnostics(
 
       for (let ty = 0; ty < rows; ty += 1) {
         for (let tx = 0; tx < cols; tx += 1) {
-          const cached = state.tileCache.get(frameId, tx, ty, z);
+          const cached = state.tileCache.peek(frameId, tx, ty, z);
 
           let color = COLORS.empty;
 
           if (cached) {
+            const prefetchedUnused =
+              cached.origin === "prefetch" && !cached.wasDisplayed;
+
             if (cached.quality === "full") {
               color = cached.wasDisplayed
                 ? COLORS.cachedFull
-                : COLORS.cachedFullWasted;
+                : prefetchedUnused
+                  ? COLORS.cachedFullWasted
+                  : COLORS.cachedFull;
             } else {
               color = cached.wasDisplayed
                 ? COLORS.cachedPreview
-                : COLORS.cachedPreviewWasted;
+                : prefetchedUnused
+                  ? COLORS.cachedPreviewWasted
+                  : COLORS.cachedPreview;
             }
-          } else {
-            const tileKey = `${frameId}:${tx}:${ty}:${z}`;
-
-            if (state.abortedKeys.has(tileKey)) {
-              color = COLORS.aborted;
-            } else if (state.inFlightKeys.has(tileKey)) {
-              color = COLORS.inFlight;
-            } else if (!state.scheduledFrameIds.has(frameId)) {
-              color = COLORS.notScheduled;
-            }
+          } else if (state.inFlightKeys.has(`${frameId}:${tx}:${ty}:${z}`)) {
+            color = COLORS.inFlight;
+          } else if (!state.scheduledFrameIds.has(frameId)) {
+            color = COLORS.notScheduled;
           }
 
           const cellX =
@@ -238,7 +245,6 @@ export function renderTileDiagnostics(
     { color: COLORS.cachedPreview, label: "shown preview" },
     { color: COLORS.cachedPreviewWasted, label: "wasted preview" },
     { color: COLORS.inFlight, label: "loading" },
-    { color: COLORS.aborted, label: "aborted" },
     { color: COLORS.notScheduled, label: "unscheduled" },
     { color: COLORS.empty, label: "empty" },
   ];
@@ -269,19 +275,30 @@ export function renderTileDiagnostics(
   const futureCached = countCachedAfter(state, state.playheadIndex, cachedFrames);
 
   ctx.fillText(
-    `past: ${pastCached} cached | future: ${futureCached} prefetched`,
+    `past: ${pastCached} cached | future: ${futureCached} cached`,
     marginLeft + 200 * dpr,
     h - 4 * dpr,
   );
 
-  const wastedKb = Math.round(state.wastedBytes / 1024);
+  const wastedKb = Math.round(state.prefetchedWastedBytes / 1024);
+  const unusedKb = Math.round(state.prefetchedUnusedResidentBytes / 1024);
   const aborted = state.abortedTasks;
-  const neverDisplayed = state.evictedNeverDisplayed;
+  const loaded = state.prefetchedLoadedCount;
+  const used = state.prefetchedUsedCount;
+  const wasted = state.prefetchedWastedCount;
+  const useRate = loaded > 0 ? Math.round((used / loaded) * 100) : 0;
+  const wasteRate = loaded > 0 ? Math.round((wasted / loaded) * 100) : 0;
 
   ctx.fillText(
-    `waste: ${wastedKb} kB | aborted: ${aborted} | never-shown: ${neverDisplayed}`,
+    `prefetch loaded: ${loaded} | used: ${used} (${useRate}%) | wasted: ${wasted} (${wasteRate}%)`,
     marginLeft,
     h - 4 * dpr - 12 * dpr,
+  );
+
+  ctx.fillText(
+    `unused resident: ${state.prefetchedUnusedResidentCount} (${unusedKb} kB) | wasted: ${wastedKb} kB | aborted: ${aborted}`,
+    marginLeft,
+    h - 4 * dpr - 24 * dpr,
   );
 }
 

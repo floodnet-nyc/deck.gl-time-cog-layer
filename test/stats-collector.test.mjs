@@ -52,19 +52,11 @@ test("buildBufferState reports missing flag", () => {
   assert.equal(result.missing, true);
 });
 
-test("buildBufferState readyFrameIds come from tile cache stats", () => {
-  const state = makeState();
-  state.tileCache.put("f1", 0, 0, 0, {
-    texture: { destroy() {} },
-    byteLength: 1, width: 1, height: 1, quality: "full",
-  });
-  state.tileCache.put("f2", 0, 0, 0, {
-    texture: { destroy() {} },
-    byteLength: 1, width: 1, height: 1, quality: "preview",
-  });
+test("buildBufferState readyFrameIds come from state readiness tracking", () => {
+  const state = makeState({ readyFrameIds: new Set(["f1"]) });
 
   const result = buildBufferState(state.tileCache, state);
-  assert.deepEqual(result.readyFrameIds.sort(), ["f1", "f2"]);
+  assert.deepEqual(result.readyFrameIds, ["f1"]);
 });
 
 test("buildStats reports frame counts and current time", () => {
@@ -78,7 +70,7 @@ test("buildStats reports frame counts and current time", () => {
 });
 
 test("buildStats cache stats reflect tile cache contents", () => {
-  const state = makeState();
+  const state = makeState({ readyFrameIds: new Set(["f1"]) });
   state.tileCache.put("f1", 0, 0, 0, {
     texture: { destroy() {} },
     byteLength: 100, width: 1, height: 1, quality: "full",
@@ -89,31 +81,31 @@ test("buildStats cache stats reflect tile cache contents", () => {
   assert.equal(result.readyFrameCount, 1);
 });
 
-test("buildStats cacheHitRate computes correctly", () => {
+test("buildStats displayCacheHitRate computes correctly", () => {
   const state = makeState();
   state.tileCache.put("f1", 0, 0, 0, {
     texture: { destroy() {} },
     byteLength: 1, width: 1, height: 1, quality: "full",
   });
-  // One hit
-  state.tileCache.get("f1", 0, 0, 0);
-  // One miss
-  state.tileCache.recordMiss();
+  state.tileCache.recordDisplayHit();
+  state.tileCache.recordDisplayMiss();
 
   const result = buildStats(state.tileCache, state.prefetcher, state);
-  assert.equal(result.cacheHitRate, 0.5);
+  assert.equal(result.displayCacheHitRate, 0.5);
 });
 
-test("buildStats cacheHitRate is 0 with no accesses", () => {
+test("buildStats displayCacheHitRate is 0 with no accesses", () => {
   const state = makeState();
   const result = buildStats(state.tileCache, state.prefetcher, state);
-  assert.equal(result.cacheHitRate, 0);
+  assert.equal(result.displayCacheHitRate, 0);
 });
 
 test("buildStats prefetchTaskCount comes from prefetcher", () => {
   const state = makeState();
   const result = buildStats(state.tileCache, state.prefetcher, state);
   assert.equal(result.prefetchTaskCount, 0);
+  assert.equal(result.queuedPrefetchTaskCount, 0);
+  assert.equal(result.inFlightPrefetchTaskCount, 0);
 });
 
 test("buildStats scheduledFrameCount reflects state", () => {
@@ -134,4 +126,36 @@ test("buildStats handles null displayFrame gracefully", () => {
   const state = makeState({ displayFrame: null });
   const result = buildStats(state.tileCache, state.prefetcher, state);
   assert.equal(result.displayFrameId, null);
+});
+
+test("buildStats reports prefetch efficiency metrics", () => {
+  const state = makeState();
+
+  state.tileCache.put("prefetch-used", 0, 0, 0, {
+    texture: { destroy() {} },
+    byteLength: 100,
+    width: 1,
+    height: 1,
+    quality: "full",
+    origin: "prefetch",
+  });
+  state.tileCache.markDisplayed("prefetch-used", 0, 0, 0);
+
+  state.tileCache.put("prefetch-unused", 0, 0, 0, {
+    texture: { destroy() {} },
+    byteLength: 50,
+    width: 1,
+    height: 1,
+    quality: "full",
+    origin: "prefetch",
+  });
+
+  const result = buildStats(state.tileCache, state.prefetcher, state);
+  assert.equal(result.prefetchedLoadedCount, 2);
+  assert.equal(result.prefetchedUsedCount, 1);
+  assert.equal(result.prefetchedWastedCount, 0);
+  assert.equal(result.prefetchedResidentCount, 2);
+  assert.equal(result.prefetchedUnusedResidentCount, 1);
+  assert.equal(result.prefetchedUseRate, 0.5);
+  assert.equal(result.prefetchedWasteRate, 0);
 });

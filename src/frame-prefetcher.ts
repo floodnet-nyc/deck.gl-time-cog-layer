@@ -262,6 +262,8 @@ export class FramePrefetcher {
 
   stats(): {
     prefetchTaskCount: number;
+    queuedTaskCount: number;
+    inFlightTaskCount: number;
     rttEWMA: number;
     throughputEWMA: number;
     abortRate: number;
@@ -271,6 +273,8 @@ export class FramePrefetcher {
 
     return {
       prefetchTaskCount: this.taskQueue.activeCount + this.taskQueue.queue.length,
+      queuedTaskCount: this.taskQueue.queue.length,
+      inFlightTaskCount: this.taskQueue.activeCount,
       rttEWMA: this.rttEWMA,
       throughputEWMA: this.throughputEWMA,
       abortRate: this.abortedTasks / denominator,
@@ -346,6 +350,7 @@ export class FramePrefetcher {
           width: result.width,
           height: result.height,
           quality: "full",
+          origin: "prefetch",
         });
 
         if (elapsed > 0 && result.byteLength) {

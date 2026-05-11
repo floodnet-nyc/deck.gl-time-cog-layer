@@ -397,10 +397,11 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
       const hit = tileCache.get(id, x, y, z);
       if (hit) {
+        tileCache.recordDisplayHit();
         tileCache.markDisplayed(id, x, y, z);
         return hit;
       }
-      tileCache.recordMiss();
+      tileCache.recordDisplayMiss();
 
       const result = await registry.decodeTile(
         { id, url, x, y, z, getTileData },
@@ -420,6 +421,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
         x, y, z,
         ...result,
         quality: "full",
+        origin: "display",
       });
 
       return result;
@@ -679,12 +681,15 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       playheadIndex: 0,
       maxZoom: 0,
       tileGrid: {},
-      wastedBytes: 0,
-      evictedNeverDisplayed: 0,
+      prefetchedUnusedResidentCount: 0,
+      prefetchedUnusedResidentBytes: 0,
+      prefetchedWastedCount: 0,
+      prefetchedWastedBytes: 0,
+      prefetchedUsedCount: 0,
+      prefetchedLoadedCount: 0,
       abortedTasks: 0,
       scheduledFrameIds: new Set<string>(),
       inFlightKeys: new Set<string>(),
-      abortedKeys: new Set<string>(),
     };
     const state = this.state;
 
@@ -736,12 +741,15 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       playheadIndex,
       maxZoom,
       tileGrid,
-      wastedBytes: tileStats.wastedBytes,
-      evictedNeverDisplayed: tileStats.evictedNeverDisplayed,
+      prefetchedUnusedResidentCount: tileStats.prefetchedUnusedResidentCount,
+      prefetchedUnusedResidentBytes: tileStats.prefetchedUnusedResidentBytes,
+      prefetchedWastedCount: tileStats.prefetchedWastedCount,
+      prefetchedWastedBytes: tileStats.prefetchedWastedBytes,
+      prefetchedUsedCount: tileStats.prefetchedUsedCount,
+      prefetchedLoadedCount: tileStats.prefetchedLoadedCount,
       abortedTasks: prefetchStats.totalAborted,
       scheduledFrameIds: new Set(state.scheduledFrames.map((f) => f.id)),
       inFlightKeys: new Set(state.prefetcher.getInFlightKeys()),
-      abortedKeys: state.prefetcher.getAbortedKeys(),
     };
   }
 }

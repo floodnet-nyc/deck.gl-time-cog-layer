@@ -176,18 +176,35 @@ export type TimeCOGStats = {
   displayFrameId: string | null;
   /** Tasks currently queued or in-flight in the prefetcher. */
   prefetchTaskCount: number;
+  queuedPrefetchTaskCount: number;
+  inFlightPrefetchTaskCount: number;
   /** Exponential weighted moving average tile fetch time (ms). */
   rttEWMA: number;
   /** EWMA throughput estimate (bytes/sec). */
   throughputEWMA: number;
   /** Fraction of prefetch tasks aborted (0–1). */
   abortRate: number;
-  /** Cache hit rate (0–1) across all tile lookups. */
-  cacheHitRate: number;
-  /** Bytes of evicted tiles that were never displayed. */
-  wastedBytes: number;
-  /** Tiles evicted that were never displayed. */
-  evictedNeverDisplayed: number;
+  /** Display-path cache hit rate (0–1). */
+  displayCacheHitRate: number;
+  /** Prefetched tiles currently resident in cache. */
+  prefetchedResidentCount: number;
+  /** Prefetched resident tiles not yet displayed. */
+  prefetchedUnusedResidentCount: number;
+  /** Cumulative prefetched tiles loaded into cache. */
+  prefetchedLoadedCount: number;
+  /** Cumulative prefetched tiles later displayed. */
+  prefetchedUsedCount: number;
+  /** Cumulative prefetched tiles wasted before display. */
+  prefetchedWastedCount: number;
+  /** Fraction of prefetched tiles later displayed. */
+  prefetchedUseRate: number;
+  /** Fraction of prefetched tiles wasted before display. */
+  prefetchedWasteRate: number;
+  prefetchedResidentBytes: number;
+  prefetchedUnusedResidentBytes: number;
+  prefetchedLoadedBytes: number;
+  prefetchedUsedBytes: number;
+  prefetchedWastedBytes: number;
   /** Cumulative tiles evicted (for computing waste ratio). */
   evictedTotal: number;
 };
@@ -204,4 +221,3 @@ export type COGLayerPassThroughProps = Omit<
 >;
 
 export type TileCoord = { x: number; y: number; z: number };
-
