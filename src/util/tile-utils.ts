@@ -64,6 +64,7 @@ export async function decodeGeoTIFFTile<T>(
   }
 }
 
+// TODO: do we want GeoTIFF registry to do this instead of TimeSequenceTileLayer (inherited from COGLayer)? Then you could handle per-frame reprojection differences instead of assuming they're all the same.
 export async function getGeoTiffDescriptor(geotiff: GeoTIFF) {
   const crs = geotiff.crs;
   const sourceProjection =

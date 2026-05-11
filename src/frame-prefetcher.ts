@@ -367,14 +367,14 @@ export class FramePrefetcher {
 
     try {
       const registry = this.sharedRegistry ?? this.internalRegistry;
+      const getTileData = this.getTileData;
 
-      if (!this.getTileData || !this.device) {
+      if (!getTileData || !this.device) {
         return;
       }
 
       const result = await registry.decodeTile(
-        id, url, x, y, z,
-        this.getTileData,
+        { id, url, x, y, z, getTileData },
         {
           device: this.device,
           signal: (

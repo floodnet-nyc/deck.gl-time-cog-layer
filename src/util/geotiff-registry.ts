@@ -83,15 +83,19 @@ export class GeoTIFFRegistry {
    * drift.
    */
   async decodeTile<T>(
-    frameId: string,
-    url: string,
-    x: number,
-    y: number,
-    z: number,
-    decodeFn: (
-      image: GeoTIFF | Overview,
-      options: { device: Device; x: number; y: number; signal?: AbortSignal; pool: DecoderPool },
-    ) => Promise<T>,
+    {
+      id, url, x, y, z, getTileData
+    }: {
+      id: string;
+      url: string;
+      x: number;
+      y: number;
+      z: number;
+      getTileData: (
+        image: GeoTIFF | Overview,
+        options: { device: Device; x: number; y: number; signal?: AbortSignal; pool: DecoderPool },
+      ) => Promise<T>,
+    },
     options: {
       device: Device;
       signal?: AbortSignal;
@@ -99,8 +103,8 @@ export class GeoTIFFRegistry {
       requestInit?: RequestInit;
     },
   ): Promise<T | null> {
-    const geotiff = await this.open(frameId, url, options.requestInit);
-    return decodeGeoTIFFTile(geotiff, x, y, z, decodeFn, {
+    const geotiff = await this.open(id, url, options.requestInit);
+    return decodeGeoTIFFTile(geotiff, x, y, z, getTileData, {
       device: options.device,
       signal: options.signal,
       pool: options.pool,

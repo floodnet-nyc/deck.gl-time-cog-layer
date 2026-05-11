@@ -416,8 +416,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       tileCache.recordMiss();
 
       const result = await registry.decodeTile(
-        id, url, x, y, z,
-        getTileData,
+        { id, url, x, y, z, getTileData },
         {
           device: options.device,
           signal: options.signal,
