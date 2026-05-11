@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   FramePrefetcher,
+  GeoTIFFRegistry,
   SequenceTileCache,
   canonicalizeUrl,
   findNearestFrameIndex,
@@ -353,11 +354,13 @@ test("mapToCoarserZoom returns identity at bias 0", () => {
 
 test("time sequence tile layer keeps preview requests on the exact tile grid", async () => {
   const cache = new SequenceTileCache();
+  const registry = new GeoTIFFRegistry();
   const coarse = { id: "coarse", tileCount: { x: 4, y: 4 } };
   const geotiff = {
     overviews: [coarse],
     tileCount: { x: 8, y: 8 },
   };
+  registry.unsafelySet("frame-1", geotiff);
   const requests = [];
 
   const layer = Object.create(TimeSequenceTileLayer.prototype);
@@ -368,6 +371,7 @@ test("time sequence tile layer keeps preview requests on the exact tile grid", a
     previewBias: 1,
     visibleTileRef: { tiles: [] },
     pool: {},
+    geotiffRegistry: registry,
     getTileData: async (image, options) => {
       requests.push({
         imageId: image.id,
@@ -383,9 +387,7 @@ test("time sequence tile layer keeps preview requests on the exact tile grid", a
       };
     },
   };
-  layer.state = {
-    geotiffByUrl: new Map([["frame-1", geotiff]]),
-  };
+  layer.state = {};
   layer.context = {
     device: {},
   };

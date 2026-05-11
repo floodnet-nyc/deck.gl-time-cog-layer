@@ -99,3 +99,51 @@ function scoreFrame(index: number, targetIndex: number, direction: number): numb
 
   return 100 - distance + directionalBoost;
 }
+
+/**
+ * When `maxFrameRate` is set and playback is active, suppress frame
+ * changes that land in the same time bucket as the previously
+ * displayed frame.  This prevents visual "stutter" when the clock
+ * is ticking faster than the configured display rate.
+ *
+ * Returns the original `resolvedFrame` if the new frame belongs to a
+ * different bucket, or the previously displayed frame if the
+ * resolved frame falls in the same bucket.
+ */
+export function applyMaxFrameRateBucking(
+  resolvedFrame: NormalizedTimeCOGFrame,
+  catalog: readonly NormalizedTimeCOGFrame[],
+  lastDisplayedFrameId: string | null,
+  maxFrameRate: number,
+  playbackRate: number,
+): NormalizedTimeCOGFrame {
+  if (maxFrameRate <= 0 || !lastDisplayedFrameId) {
+    return resolvedFrame;
+  }
+
+  const bucketIntervalMs =
+    (1000 / maxFrameRate) *
+    Math.abs(playbackRate);
+  const originTimeMs = catalog[0]?.timeMs ?? 0;
+  const resolvedBucket = Math.floor(
+    (resolvedFrame.timeMs - originTimeMs) / bucketIntervalMs,
+  );
+
+  const lastFrame = catalog.find(
+    (f) => f.id === lastDisplayedFrameId,
+  );
+
+  if (!lastFrame) {
+    return resolvedFrame;
+  }
+
+  const lastBucket = Math.floor(
+    (lastFrame.timeMs - originTimeMs) / bucketIntervalMs,
+  );
+
+  if (lastBucket === resolvedBucket) {
+    return lastFrame;
+  }
+
+  return resolvedFrame;
+}

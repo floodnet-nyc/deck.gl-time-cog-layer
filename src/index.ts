@@ -29,7 +29,7 @@ export type { BufferCoverage } from "./util/frame-coverage.js";
 export { buildBufferState, buildStats } from "./util/stats-collector.js";
 export { extractCOGLayerProps, TIME_COG_EXCLUDED_KEYS } from "./util/cog-prop-keys.js";
 export type { TimeCOGExcludedKey } from "./util/cog-prop-keys.js";
-export { scheduleFrameWindow } from "./util/frame-scheduler.js";
+export { scheduleFrameWindow, applyMaxFrameRateBucking } from "./util/frame-scheduler.js";
 export type { CachedTile, TileCachePolicy, TileCacheStats, TileQuality } from "./sequence-tile-cache.js";
 export { SequenceTileCache } from "./sequence-tile-cache.js";
 export {

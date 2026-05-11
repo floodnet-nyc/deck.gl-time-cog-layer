@@ -12,14 +12,14 @@ import {
   resolveFrameForTime,
 } from "./util/frame-catalog.js";
 import { FramePrefetcher } from "./frame-prefetcher.js";
-import { scheduleFrameWindow } from "./util/frame-scheduler.js";
+import { scheduleFrameWindow, applyMaxFrameRateBucking } from "./util/frame-scheduler.js";
 import { SequenceTileCache } from "./sequence-tile-cache.js";
 import { TimeSequenceTileLayer } from "./time-sequence-tile-layer.js";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 import { detectInteractionMode } from "./util/interaction-mode.js";
 import { computeCoverage, computeBufferState } from "./util/frame-coverage.js";
 import { buildBufferState, buildStats } from "./util/stats-collector.js";
-import { extractCOGLayerProps } from "./util/cog-prop-keys.js";
+import { mergeCogLayerProps } from "./util/cog-prop-keys.js";
 import type {
   NormalizedTimeCOGFrame,
   QualityPolicy,
@@ -172,7 +172,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     }
 
     const initialUrl = state.initialGeotiffUrl || frame.url;
-    const passThrough = this.cogLayerProps(frame);
+    const passThrough = mergeCogLayerProps(this.props, frame);
     const qualityPolicy = this.props.qualityPolicy ?? {};
     const bias =
       state.interactionMode === "scrubbing"
@@ -259,11 +259,15 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       this.props.missingFramePolicy ?? DEFAULT_MISSING_FRAME_POLICY,
     );
 
-    this.applyMaxFrameRateBucking(
-      resolution,
-      catalog,
-      playing,
-    );
+    if (playing && resolution.displayFrame) {
+      resolution.displayFrame = applyMaxFrameRateBucking(
+        resolution.displayFrame,
+        catalog,
+        state.lastDisplayedFrameId,
+        this.props.maxFrameRate ?? 0,
+        this.props.playbackRate ?? 0,
+      );
+    }
 
     const targetIndex = resolution.displayFrame
       ? findNearestFrameIndex(catalog, resolution.displayFrame.timeMs)
@@ -373,66 +377,6 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     });
   }
 
-  /** Fire `onFrameReady` if the display frame achieves full tile coverage for the first time. */
-  private checkFrameReady(frame: NormalizedTimeCOGFrame): void {
-    const state = this.state;
-
-    if (state.readyFrameIds.has(frame.id)) {
-      return;
-    }
-
-    if (
-      state.tileCache.hasFullCoverage(
-        frame.id,
-        state.visibleTileRef.tiles,
-      )
-    ) {
-      state.readyFrameIds.add(frame.id);
-      this.props.onFrameReady?.(frame);
-    }
-  }
-
-  private applyMaxFrameRateBucking(
-    resolution: { displayFrame: NormalizedTimeCOGFrame | null },
-    catalog: NormalizedTimeCOGFrame[],
-    playing: boolean,
-  ): void {
-    const state = this.state;
-    const maxFrameRate = this.props.maxFrameRate ?? 0;
-
-    if (!resolution.displayFrame || maxFrameRate <= 0 || !playing) {
-      return;
-    }
-
-    const bucketIntervalMs =
-      (1000 / maxFrameRate) *
-      Math.abs(this.props.playbackRate ?? 0);
-    const originTimeMs = catalog[0]?.timeMs ?? 0;
-    const resolvedBucket = Math.floor(
-      (resolution.displayFrame.timeMs - originTimeMs) / bucketIntervalMs,
-    );
-
-    if (!state.lastDisplayedFrameId) {
-      return;
-    }
-
-    const lastFrame = catalog.find(
-      (f) => f.id === state.lastDisplayedFrameId,
-    );
-
-    if (!lastFrame) {
-      return;
-    }
-
-    const lastBucket = Math.floor(
-      (lastFrame.timeMs - originTimeMs) / bucketIntervalMs,
-    );
-
-    if (lastBucket === resolvedBucket) {
-      resolution.displayFrame = lastFrame;
-    }
-  }
-
   private emitState(s: TimeCOGLayerState): void {
     this.props.onBufferStateChange?.(buildBufferState(s.tileCache, s));
     this.props.onStats?.(buildStats(s.tileCache, s.prefetcher, s));
@@ -491,25 +435,23 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     this.checkFrameReady(displayFrame);
   }
 
-  private cogLayerProps(
-    frame: NormalizedTimeCOGFrame,
-  ): ReturnType<typeof extractCOGLayerProps<TimeCOGLayerProps>> {
-    const cogProps = extractCOGLayerProps(this.props);
+  /** Fire `onFrameReady` if the display frame achieves full tile coverage for the first time. */
+  private checkFrameReady(frame: NormalizedTimeCOGFrame): void {
+    const state = this.state;
 
-    if (!frame.requestInit) {
-      return cogProps;
+    if (state.readyFrameIds.has(frame.id)) {
+      return;
     }
 
-    return {
-      ...cogProps,
-      loadOptions: {
-        ...cogProps.loadOptions,
-        fetch: {
-          ...cogProps.loadOptions?.fetch,
-          ...frame.requestInit,
-        },
-      },
-    };
+    if (
+      state.tileCache.hasFullCoverage(
+        frame.id,
+        state.visibleTileRef.tiles,
+      )
+    ) {
+      state.readyFrameIds.add(frame.id);
+      this.props.onFrameReady?.(frame);
+    }
   }
 
   /**

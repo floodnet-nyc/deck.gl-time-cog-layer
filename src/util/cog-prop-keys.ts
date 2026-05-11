@@ -1,3 +1,5 @@
+import type { NormalizedTimeCOGFrame, TimeCOGLayerProps } from "../types";
+
 /**
  * Keys that belong to {@link TimeCOGLayerProps} but are **not**
  * forwarded to the underlying {@link COGLayer} sublayer via the
@@ -53,4 +55,26 @@ export function extractCOGLayerProps<P extends Record<string, unknown>>(
   }
 
   return result as Omit<P, TimeCOGExcludedKey>;
+}
+
+export function mergeCogLayerProps(
+    props: TimeCOGLayerProps,
+    frame: NormalizedTimeCOGFrame,
+): ReturnType<typeof extractCOGLayerProps<TimeCOGLayerProps>> {
+  const cogProps = extractCOGLayerProps(props);
+
+  if (!frame.requestInit) {
+    return cogProps;
+  }
+
+  return {
+    ...cogProps,
+    loadOptions: {
+      ...cogProps.loadOptions,
+      fetch: {
+        ...cogProps.loadOptions?.fetch,
+        ...frame.requestInit,
+      },
+    },
+  };
 }
