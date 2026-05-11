@@ -12,10 +12,7 @@ import { COGLayer } from "@developmentseed/deck.gl-geotiff";
 
 /**
  * Custom props injected by {@link TimeCOGLayer} into the persistent
- * sublayer.  These carry the dynamic frame identity, the shared tile
- * cache, and the preview bias so that every `getTileData` invocation can
- * check the cache for the current frame and fall back to coarser preview
- * tiles on miss.
+ * sublayer.
  */
 export type TimeSequenceTileLayerProps = {
 
@@ -41,24 +38,8 @@ export type TimeSequenceTileLayerProps = {
  * producing a frozen ghost raster.
  *
  * ### `_getTileDataCallback()`
- * Wraps the user-supplied (or inferred-default) `getTileData` in a
- * cache-aware fetcher with progressive-loading support:
- *
- * 1. Check the shared `SequenceTileCache` for the tile at `(x, y, z)`.
- * 2. On miss, load the exact COG tile for the current `(x, y, z)`.
- *
- * Overview-biased preview reads are intentionally disabled here. The
- * current raster renderer assumes that each tile's pixels already
- * correspond to the current tile's spatial footprint. Substituting a
- * coarser overview tile violates that assumption and produces
- * misregistered preview imagery.
- * 3. Store the result under the original key `(frameId, x, y, z)`
- *    with quality `"preview"` or `"full"`.
- *
- * The COG overview at `z - bias` covers the same spatial area as `z`
- * but at lower pixel resolution — the deck.gl TileLayer renders it in
- * the correct tile extent automatically, producing a blurry preview
- * that is later upgraded to full resolution.
+ * Uses the exact-tile fetch path supplied by `TimeCOGLayer`. The
+ * parent layer handles cache lookup, decode, and frame switching.
  *
  * ### `_renderTileCallback()`
  * Simple pass-through to the user's `renderTile` or the inferred

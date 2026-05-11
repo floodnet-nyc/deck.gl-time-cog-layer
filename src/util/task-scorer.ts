@@ -124,7 +124,7 @@ export function qualityUrgencyScore(
 ): number {
   if (task.quality === "full") {
     const cache = ctx.getTileCache();
-    const existing = cache.get(task.frameId, task.x, task.y, task.z);
+    const existing = cache.peek(task.frameId, task.x, task.y, task.z);
 
     if (existing && existing.quality === "preview") {
       return weights.qualityUpgrade;
@@ -189,15 +189,8 @@ export function etaPenalty(
 export function qualityForTask(
   mode: InteractionMode,
   _distanceIndex: number,
-  lowResFirst: boolean | undefined,
+  _lowResFirst: boolean | undefined,
 ): { quality: TileQuality } {
-  if (lowResFirst === false) {
-    return { quality: "full" };
-  }
-
-  if (mode === "scrubbing" || mode === "seeking") {
-    return { quality: "preview" };
-  }
-
-  return { quality: "preview" };
+  void mode;
+  return { quality: "full" };
 }

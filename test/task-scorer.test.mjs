@@ -296,19 +296,19 @@ test("qualityForTask: returns full when lowResFirst is false", () => {
   assert.deepEqual(result, { quality: "full" });
 });
 
-test("qualityForTask: returns preview during seeking", () => {
+test("qualityForTask: returns full during seeking", () => {
   const result = qualityForTask("seeking", 0, true);
-  assert.deepEqual(result, { quality: "preview" });
+  assert.deepEqual(result, { quality: "full" });
 });
 
-test("qualityForTask: returns preview during scrubbing", () => {
+test("qualityForTask: returns full during scrubbing", () => {
   const result = qualityForTask("scrubbing", 0, true);
-  assert.deepEqual(result, { quality: "preview" });
+  assert.deepEqual(result, { quality: "full" });
 });
 
-test("qualityForTask: returns preview during playing when lowResFirst is default", () => {
+test("qualityForTask: returns full during playing when lowResFirst is default", () => {
   const result = qualityForTask("playing", 0, undefined);
-  assert.deepEqual(result, { quality: "preview" });
+  assert.deepEqual(result, { quality: "full" });
 });
 
 // ─── scoreTask integration ───

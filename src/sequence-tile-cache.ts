@@ -130,6 +130,19 @@ export class SequenceTileCache {
   }
 
   /**
+   * Read a cached tile without affecting recency or hit-rate telemetry.
+   * Use this for diagnostics, scoring, and coverage computations.
+   */
+  peek(
+    frameId: string,
+    x: number,
+    y: number,
+    z: number,
+  ): CachedTile | undefined {
+    return this.tiles.get(tileKey(frameId, x, y, z));
+  }
+
+  /**
    * Return the best available cached tile for a given coordinate,
    * searching progressively coarser zoom levels.
    *
@@ -175,13 +188,18 @@ export class SequenceTileCache {
   hasFullCoverage(
     frameId: string,
     tiles: readonly { x: number; y: number; z: number }[],
+    options: { trackAccess?: boolean } = {},
   ): boolean {
     if (tiles.length === 0) {
       return false;
     }
 
+    const readTile = options.trackAccess === false
+      ? (x: number, y: number, z: number) => this.peek(frameId, x, y, z)
+      : (x: number, y: number, z: number) => this.lookup(frameId, x, y, z);
+
     for (const t of tiles) {
-      const entry = this.lookup(frameId, t.x, t.y, t.z);
+      const entry = readTile(t.x, t.y, t.z);
 
       if (!entry || entry.quality !== "full") {
         return false;

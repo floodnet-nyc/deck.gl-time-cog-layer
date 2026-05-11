@@ -316,9 +316,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
    * never changes.  This ensures `COGLayer` computes the shared
    * tileset descriptor exactly once.
    *
-   * During seek / scrub a non-zero `previewBias` is forwarded so
-   * that the sublayer fetches at a coarser zoom on cache miss,
-   * delivering an immediate preview before the full-res upgrade.
+   * Frame changes are handled by the shared cache plus a reload of the
+   * persistent sublayer's tile data callback for the new frame.
    */
   renderLayers(): Layer | LayersList | null {
     const state = this.state;
@@ -330,9 +329,6 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
     const initialUrl = state.initialGeotiffUrl || frame.url;
     const passThrough = mergeCogLayerProps(this.props, frame);
-    const qualityPolicy = this.props.qualityPolicy ?? {};
-    
-
     const userGeoTiff = this.props.onGeoTIFFLoad;
     let onGeoTIFFLoad = userGeoTiff;
 
@@ -398,15 +394,6 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     ) => {
       const { id, url, requestInit } = frame;
       const { x, y, z } = tile.index;
-      
-      // const state = this.state;
-      // const qualityPolicy = this.props.qualityPolicy ?? {};
-      // const bias =
-      //   state.interactionMode === "scrubbing"
-      //     ? (qualityPolicy.scrubOverviewBias ?? 2)
-      //     : state.interactionMode === "seeking"
-      //       ? (qualityPolicy.previewOverviewBias ?? 1)
-      //       : 0;
 
       const hit = tileCache.get(id, x, y, z);
       if (hit) {
@@ -486,8 +473,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       );
     }
 
-    const targetIndex = resolution.displayFrame
-      ? findNearestFrameIndex(catalog, resolution.displayFrame.timeMs)
+    const targetIndex = resolution.targetFrame
+      ? findNearestFrameIndex(catalog, resolution.targetFrame.timeMs)
       : -1;
 
     const scheduledFrames = scheduleFrameWindow(
@@ -578,6 +565,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     }
 
     this.updatePrefetch({
+      targetFrame: resolution.targetFrame,
       displayFrame: resolution.displayFrame,
       scheduledFrames,
     });
@@ -600,14 +588,17 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   }
 
   private updatePrefetch(snapshot?: {
+    targetFrame: NormalizedTimeCOGFrame | null;
     displayFrame: NormalizedTimeCOGFrame | null;
     scheduledFrames: NormalizedTimeCOGFrame[];
   }): void {
     const state = this.state;
+    const targetFrame = snapshot?.targetFrame ?? state.targetFrame;
     const displayFrame = snapshot?.displayFrame ?? state.displayFrame;
     const scheduledFrames = snapshot?.scheduledFrames ?? state.scheduledFrames;
 
     if (
+      !targetFrame ||
       !displayFrame ||
       !this.context.device ||
       !this.props.getTileData
@@ -632,7 +623,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     );
 
     state.prefetcher.update({
-      targetFrame: displayFrame,
+      targetFrame,
       scheduledFrames,
       visibleTiles: state.visibleTileRef.tiles,
       device: this.context.device,
@@ -664,6 +655,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       state.tileCache.hasFullCoverage(
         frame.id,
         state.visibleTileRef.tiles,
+        { trackAccess: false },
       )
     ) {
       state.readyFrameIds.add(frame.id);

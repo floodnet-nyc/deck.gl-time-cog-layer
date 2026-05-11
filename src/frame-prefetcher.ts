@@ -10,7 +10,6 @@ import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWei
 import { TaskQueue, taskKey, type TileCoord, type TileTask } from "./util/task-queue.js";
 import {
   scoreTask,
-  qualityForTask,
   type ScoringContext,
 } from "./util/task-scorer.js";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
@@ -48,7 +47,7 @@ type PrefetchSnapshot = {
 };
 
 /**
- * Background tile-prefetch pipeline with progressive loading support.
+ * Background tile-prefetch pipeline for nearby frames.
  *
  * ## Role
  *
@@ -56,7 +55,7 @@ type PrefetchSnapshot = {
  * receives the current visible tile coordinates, the frame schedule
  * window, the interaction mode, and the quality policy.  For each
  * scheduled frame (excluding the target, which is already being
- * loaded by the sublayer), it creates `(frameId, x, y, z, quality)`
+ * loaded by the sublayer), it creates `(frameId, x, y, z)`
  * tasks and scores them by temporal distance and playback direction.
  *
  * ## Scoring
@@ -64,8 +63,6 @@ type PrefetchSnapshot = {
  * ```text
  * priority = 100 - (absDistance * 20) + directionalBoost
  * ```
- *
- * Upgrade tasks (preview → full) receive a flat high priority.
  */
 export class FramePrefetcher {
   private tileCache: SequenceTileCache;
@@ -193,12 +190,6 @@ export class FramePrefetcher {
       targetFrame: snapshot.targetFrame,
     };
 
-    const { quality: defaultQuality } = qualityForTask(
-      interactionMode,
-      0,
-      snapshot.qualityPolicy.lowResFirst,
-    );
-
     for (const frame of snapshot.scheduledFrames) {
       if (frame.id === snapshot.targetFrame.id) {
         continue;
@@ -215,7 +206,7 @@ export class FramePrefetcher {
       for (const tile of snapshot.visibleTiles) {
         const key = taskKey(frame.id, tile.x, tile.y, tile.z);
 
-        if (this.tileCache.get(frame.id, tile.x, tile.y, tile.z)) {
+        if (this.tileCache.peek(frame.id, tile.x, tile.y, tile.z)) {
           continue;
         }
 
@@ -231,7 +222,7 @@ export class FramePrefetcher {
           x: tile.x,
           y: tile.y,
           z: tile.z,
-          quality: defaultQuality,
+          quality: "full",
           priority: 0,
         };
 
@@ -244,53 +235,6 @@ export class FramePrefetcher {
 
         newTasks.push(task);
         this.taskQueue.markQueued(key);
-      }
-    }
-
-    if (interactionMode === "idle") {
-      for (const frame of snapshot.scheduledFrames) {
-        if (frame.id === snapshot.targetFrame.id) {
-          continue;
-        }
-        for (const tile of snapshot.visibleTiles) {
-          const exactKey = taskKey(frame.id, tile.x, tile.y, tile.z);
-          const existing = this.tileCache.get(frame.id, tile.x, tile.y, tile.z);
-
-          if (existing && existing.quality === "full") {
-            continue;
-          }
-
-          if (this.taskQueue.isTracked(exactKey)) {
-            continue;
-          }
-
-          if (existing && existing.quality !== "full") {
-            const upgradeTask: TileTask = {
-              frameId: frame.id,
-              frameUrl: frame.url,
-              requestInit: frame.requestInit,
-              byteSizeHint: frame.byteSizeHint,
-              x: tile.x,
-              y: tile.y,
-              z: tile.z,
-              quality: "full",
-              priority: 0,
-            };
-            const distanceIndex =
-              snapshot.scheduledFrames.indexOf(frame) -
-              snapshot.scheduledFrames.indexOf(snapshot.targetFrame);
-
-            upgradeTask.priority = scoreTask(
-              upgradeTask,
-              distanceIndex,
-              scoringCtx,
-              { ...this.defaultScoringWeights, ...snapshot.scoringWeights },
-            );
-
-            newTasks.push(upgradeTask);
-            this.taskQueue.markQueued(exactKey);
-          }
-        }
       }
     }
 
@@ -415,6 +359,9 @@ export class FramePrefetcher {
         console.warn("FramePrefetcher: tile fetch failed", err);
       }
     } finally {
+      if (this.uploadsThisFrame > 0) {
+        this.uploadsThisFrame -= 1;
+      }
       this.taskQueue.finish(key);
       this.pump();
     }

@@ -67,7 +67,7 @@ export class TaskQueue {
 
     for (const task of this.queue) {
       if (!scheduledIds.has(task.frameId)) continue;
-      if (tileCache.get(task.frameId, task.x, task.y, task.z)) continue;
+      if (tileCache.peek(task.frameId, task.x, task.y, task.z)) continue;
 
       const key = taskKey(task.frameId, task.x, task.y, task.z);
       if (nextKeys.has(key)) continue;

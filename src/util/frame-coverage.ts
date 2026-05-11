@@ -21,7 +21,7 @@ export function computeCoverage(
   let cached = 0;
 
   for (const t of visibleTiles) {
-    const entry = tileCache.get(frame.id, t.x, t.y, t.z);
+    const entry = tileCache.peek(frame.id, t.x, t.y, t.z);
 
     if (entry && entry.quality === "full") {
       cached += 1;
@@ -63,7 +63,7 @@ export function computeBufferState(
       for (let i = idx + 1; i < byTime.length; i += 1) {
         const f = byTime[i];
 
-        if (f && tileCache.hasFullCoverage(f.id, visibleTiles)) {
+        if (f && tileCache.hasFullCoverage(f.id, visibleTiles, { trackAccess: false })) {
           bufferedAhead += 1;
         } else {
           break;
@@ -73,7 +73,7 @@ export function computeBufferState(
       for (let i = idx - 1; i >= 0; i -= 1) {
         const f = byTime[i];
 
-        if (f && tileCache.hasFullCoverage(f.id, visibleTiles)) {
+        if (f && tileCache.hasFullCoverage(f.id, visibleTiles, { trackAccess: false })) {
           bufferedBehind += 1;
         } else {
           break;
@@ -100,5 +100,5 @@ export function isFrameReady(
     return false;
   }
 
-  return tileCache.hasFullCoverage(frame.id, visibleTiles);
+  return tileCache.hasFullCoverage(frame.id, visibleTiles, { trackAccess: false });
 }
