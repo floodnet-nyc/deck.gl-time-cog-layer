@@ -509,18 +509,12 @@ export class SequenceTileCache {
   }
 
   private retireTile(tile: CachedTile): void {
-    tile.texture.destroy();
-    tile.mask?.destroy();
-
-    // TODO: there seems to be a bug sometimes seen with the destroy commands above. But it's intermittent and I'm not sure if the alternative below is necessary.
-    // this.retiredTextures.add(tile.texture);
-    // if (tile.mask) {
-    //   this.retiredTextures.add(tile.mask);
-    // }
-
     this.evictedTotal += 1;
 
     if (!tile.wasDisplayed) {
+      tile.texture.destroy();
+      tile.mask?.destroy();
+
       this.evictedNeverDisplayed += 1;
       this.wastedBytes += tile.byteLength;
     }
