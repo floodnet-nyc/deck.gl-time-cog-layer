@@ -7,9 +7,7 @@ import {
   RasterTileset2D,
 } from "@developmentseed/deck.gl-raster";
 import type { RenderTileResult, TilesetDescriptor } from "@developmentseed/deck.gl-raster";
-import type {
-  MinimalTileData,
-} from "@developmentseed/deck.gl-geotiff";
+import type { MinimalTileData } from "@developmentseed/deck.gl-geotiff";
 import { COGLayer } from "@developmentseed/deck.gl-geotiff";
 
 /**
@@ -20,13 +18,6 @@ import { COGLayer } from "@developmentseed/deck.gl-geotiff";
  * tiles on miss.
  */
 export type TimeSequenceTileLayerProps = {
-  /**
-   * When > 0, the sublayer fetches at a coarser zoom level on cache
-   * miss and stores the result as a "preview" tile.  Set by the
-   * coordinator based on the current interaction mode and quality
-   * policy (1 for seek, 2 for scrub, 0 for playing/idle).
-   */
-  previewBias?: number;
 
   getTileData?: (props: TileLoadProps, options: { device: Device; signal?: AbortSignal }) => Promise<any>;
 
@@ -171,7 +162,13 @@ export class TimeSequenceTileLayer<
       maxCacheSize,
       maxCacheByteSize,
       maxRequests,
-      refinementStrategy,
+      // TODO: the current raster renderer doesn't handle mid-flight tile changes
+      refinementStrategy: (
+        refinementStrategy === 'best-available' || // doesn't work
+        refinementStrategy === 'no-overlap'  // doesn't work
+        ? 'never' // works (little black flash between zoom levels, but no significant degradation or ghosting)
+        : refinementStrategy  // best of luck
+      ),
       onViewportLoad,
     });
   }
