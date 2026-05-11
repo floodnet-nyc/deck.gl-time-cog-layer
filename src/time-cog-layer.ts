@@ -5,6 +5,8 @@ import type {
 } from "@deck.gl/core";
 import { CompositeLayer } from "@deck.gl/core";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
+import type { _Tileset2DProps, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
+import type { Device } from "@luma.gl/core";
 import {
   findNearestFrameIndex,
   normalizeFrameCatalog,
@@ -362,7 +364,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       ...passThrough,
       id: `${this.props.id}-tiles`,
       geotiff: initialUrl,
-      getTileData: this.props.getTileData,
+      getTileData: this._getTileDataCallback(frame),
       renderTile: this.props.renderTile,
       sequenceTileCache: state.tileCache,
       currentFrameId: frame.id,
@@ -374,6 +376,62 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       onVisibleTilesChange: () => this.updatePrefetch(),
       onGeoTIFFLoad: onGeoTIFFLoad ?? undefined,
     } as object);
+  }
+
+
+  protected _getTileDataCallback(frame: NormalizedTimeCOGFrame): ((props: TileLoadProps, options: { device: Device; signal?: AbortSignal }) => Promise<any>) | undefined {
+    const tileCache = this.state.tileCache;
+    const registry = this.state.geotiffRegistry;
+    if (!tileCache) {
+      return undefined;
+    }
+
+    const userFn = this.props.getTileData;
+    if (!userFn) {
+      return undefined;
+    }
+
+    return async (
+      tile: TileLoadProps,
+      options: { device: Device; signal?: AbortSignal },
+    ) => {
+      const { id, url, requestInit } = frame;
+      const { x, y, z } = tile.index;
+
+      const hit = tileCache.get(id, x, y, z);
+      if (hit) {
+        tileCache.markDisplayed(id, x, y, z);
+        return hit;
+      }
+      tileCache.recordMiss();
+
+      const result = await registry.decodeTile(
+        id,
+        url,
+        x,
+        y,
+        z,
+        userFn,
+        {
+          device: options.device,
+          signal: options.signal,
+          pool: this.props.pool,
+          requestInit,
+        },
+      );
+
+      if (!result) {
+        return null;
+      }
+
+      tileCache.put(id, x, y, z, {
+        x, y, z,
+        ...result,
+        quality: "full",
+      });
+
+      return result;
+    };
   }
 
   /**

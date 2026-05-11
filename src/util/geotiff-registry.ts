@@ -33,6 +33,18 @@ export class GeoTIFFRegistry {
     return this.map.get(frameId);
   }
 
+  has(frameId: string): boolean {
+    return this.map.has(frameId);
+  }
+
+  unsafelySet(frameId: string, geotiff: GeoTIFF): void {
+    this.map.set(frameId, geotiff);
+  }
+
+  clear(): void {
+    this.map.clear();
+  }
+
   /**
    * Lazily open the GeoTIFF for `frameId`, caching the result.
    * Evicts the oldest entry when the cache exceeds `maxSize`.
@@ -93,17 +105,5 @@ export class GeoTIFFRegistry {
       signal: options.signal,
       pool: options.pool,
     });
-  }
-
-  has(frameId: string): boolean {
-    return this.map.has(frameId);
-  }
-
-  unsafelySet(frameId: string, geotiff: GeoTIFF): void {
-    this.map.set(frameId, geotiff);
-  }
-
-  clear(): void {
-    this.map.clear();
   }
 }

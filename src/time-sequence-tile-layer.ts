@@ -1,4 +1,4 @@
-import type { Device, Texture } from "@luma.gl/core";
+import type { Device } from "@luma.gl/core";
 import type { Layer } from "@deck.gl/core";
 import type { _Tileset2DProps, _Tile2DHeader as Tile2DHeader, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
 import { TileLayer } from "@deck.gl/geo-layers";
@@ -8,11 +8,9 @@ import {
 } from "@developmentseed/deck.gl-raster";
 import type { RenderTileResult, TilesetDescriptor } from "@developmentseed/deck.gl-raster";
 import type {
-  GetTileDataOptions,
   MinimalTileData,
 } from "@developmentseed/deck.gl-geotiff";
 import { COGLayer } from "@developmentseed/deck.gl-geotiff";
-import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 import type { SequenceTileCache } from "./sequence-tile-cache.js";
 
@@ -45,6 +43,8 @@ export type TimeSequenceTileLayerProps = {
    * policy (1 for seek, 2 for scrub, 0 for playing/idle).
    */
   previewBias?: number;
+
+  getTileData?: (props: TileLoadProps, options: { device: Device; signal?: AbortSignal }) => Promise<any>;
 
   /** Mutable reference updated by the inner TileLayer's `onViewportLoad` callback. */
   visibleTileRef: { tiles: TileCoord[] };
@@ -116,23 +116,12 @@ export class TimeSequenceTileLayer<
     lastFrameId?: string;
   };
 
-  private _localRegistry?: GeoTIFFRegistry;
-
-  initializeState(): void {
-    super.initializeState();
-    this._localRegistry = new GeoTIFFRegistry();
-  }
-
-  finalizeState(context: Parameters<COGLayer<DataT>["finalizeState"]>[0]): void {
-    super.finalizeState(context);
-  }
-
   renderLayers(): Layer | null {
     const descriptor = this._tilesetDescriptor();
-    const getTileDataCallback = this._getTileDataCallback();
-    const renderTileCallback = this._renderTileCallback();
+    const getTileData = this._getTileDataCallback();
+    const renderTile = this._renderTileCallback();
 
-    if (!descriptor || !getTileDataCallback || !renderTileCallback) {
+    if (!descriptor || !getTileData || !renderTile) {
       return null;
     }
     // // Capture the device once so the inner `TilesetFactory` can read
@@ -162,11 +151,6 @@ export class TimeSequenceTileLayer<
       }
     }
 
-    const {
-      visibleTileRef, currentFrameId, onVisibleTilesChange, 
-      updateTriggers, signal: userSignal, onViewportLoad: userOnViewportLoad 
-    } = this.props;
-
     const base = this as unknown as {
       _renderSubLayers: (
         subProps: Record<string, unknown>,
@@ -175,16 +159,32 @@ export class TimeSequenceTileLayer<
       ) => Layer[];
     };
 
+    const {
+      visibleTileRef, currentFrameId, onVisibleTilesChange,
+
+      tileSize,
+      zoomOffset,
+      maxZoom,
+      minZoom,
+      extent,
+      debounceTime,
+      maxCacheSize,
+      maxCacheByteSize,
+      maxRequests,
+      refinementStrategy,
+      updateTriggers,
+    } = this.props;
+
     return new TileLayer({
       id: `raster-tile-layer-${this.id}`,
       TilesetClass: TilesetFactory,
       getTileData: (tile: TileLoadProps) => {
-        return getTileDataCallback(tile, {
+        return getTileData(tile, {
           device: this.context.device,
           signal: (
-            userSignal && tile.signal
-            ? AbortSignal.any([userSignal, tile.signal])
-            : (userSignal ?? tile.signal)
+            this.props.signal && tile.signal
+            ? AbortSignal.any([this.props.signal, tile.signal])
+            : (this.props.signal ?? tile.signal)
           ),
         });
       },
@@ -194,7 +194,7 @@ export class TimeSequenceTileLayer<
         return (base as any)._renderSubLayers(
           subProps,
           descriptor,
-          renderTileCallback,
+          renderTile,
         );
       },
       updateTriggers: {
@@ -202,16 +202,16 @@ export class TimeSequenceTileLayer<
         // all: Math.round(this.context.viewport?.zoom ?? 0),
         renderSubLayers: updateTriggers?.renderTile,
       },
-      tileSize: this.props.tileSize,
-      zoomOffset: this.props.zoomOffset,
-      maxZoom: this.props.maxZoom,
-      minZoom: this.props.minZoom,
-      extent: this.props.extent,
-      debounceTime: this.props.debounceTime,
-      maxCacheSize: this.props.maxCacheSize,
-      maxCacheByteSize: this.props.maxCacheByteSize,
-      maxRequests: this.props.maxRequests,
-      refinementStrategy: this.props.refinementStrategy ?? "no-overlap",
+      tileSize,
+      zoomOffset,
+      maxZoom,
+      minZoom,
+      extent,
+      debounceTime,
+      maxCacheSize,
+      maxCacheByteSize,
+      maxRequests,
+      refinementStrategy,
       onViewportLoad: (loadedTiles: Tile2DHeader<Record<string, unknown>>[]) => {
         if (visibleTileRef) {
           visibleTileRef.tiles = loadedTiles.map((t) => ({
@@ -222,7 +222,7 @@ export class TimeSequenceTileLayer<
         }
 
         onVisibleTilesChange?.();
-        userOnViewportLoad?.(loadedTiles);
+        this.props.onViewportLoad?.(loadedTiles);
       },
     });
   }
@@ -230,77 +230,13 @@ export class TimeSequenceTileLayer<
   protected _getTileDataCallback(): ReturnType<
     RasterTileLayer<DataT>["_getTileDataCallback"]
   > {
-    const tileCache = this.props.sequenceTileCache;
-    if (!tileCache) {
-      return undefined;
-    }
+    const userFn = this.props.getTileData;
 
-    const userFn = this.props.getTileData ?? this.state.defaultGetTileData;
     if (!userFn) {
       return undefined;
     }
 
-    return async (
-      tile: TileLoadProps,
-      options: { device: Device; signal?: AbortSignal },
-    ) => {
-      const { currentFrameId, currentFrameUrl, currentFrameRequestInit } = this.props;
-      const { x, y, z } = tile.index;
-
-      const hit = tileCache.get(currentFrameId, x, y, z);
-
-      if (hit) {
-        tileCache.markDisplayed(currentFrameId, x, y, z);
-
-        return {
-          texture: hit.texture,
-          mask: hit.mask,
-          byteLength: hit.byteLength,
-          width: hit.width,
-          height: hit.height,
-        } as unknown as DataT;
-      }
-
-      tileCache.recordMiss();
-
-      const registry = this.props.geotiffRegistry ?? this._localRegistry!;
-
-      const result = await registry.decodeTile(
-        currentFrameId,
-        currentFrameUrl,
-        x,
-        y,
-        z,
-        userFn as (
-          img: GeoTIFF | Overview,
-          opts: GetTileDataOptions,
-        ) => Promise<DataT>,
-        {
-          device: options.device,
-          signal: options.signal,
-          pool: this.props.pool,
-          requestInit: currentFrameRequestInit,
-        },
-      );
-
-      if (!result) {
-        return null as DataT;
-      }
-
-      tileCache.put(currentFrameId, x, y, z, {
-        x,
-        y,
-        z,
-        texture: (result as unknown as { texture: Texture }).texture,
-        mask: (result as unknown as { mask?: Texture }).mask,
-        byteLength: (result.byteLength as number | undefined) ?? 0,
-        width: result.width,
-        height: result.height,
-        quality: "full",
-      });
-
-      return result;
-    };
+    return userFn;
   }
 
   protected _renderTileCallback(): ReturnType<

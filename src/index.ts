@@ -39,6 +39,7 @@ export {
   isMissingTileError,
   mapToCoarserZoom,
 } from "./util/tile-utils.js";
+export type { TimeCOGLayerProps } from "./time-cog-layer.js";
 export { TimeCOGLayer } from "./time-cog-layer.js";
 export type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
 export { renderTileDiagnostics } from "./util/tile-diagnostics.js";
@@ -56,7 +57,6 @@ export type {
   TimeCOGCachePolicy,
   TimeCOGFrame,
   TimeCOGFrameResolution,
-  TimeCOGLayerProps,
   TimeCOGStats,
   TimeValue,
 } from "./types.js";

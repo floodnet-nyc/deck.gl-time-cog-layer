@@ -3,6 +3,14 @@ import type { Texture } from "@luma.gl/core";
 /** Whether a cached tile is a coarse preview or a full-resolution tile. */
 export type TileQuality = "preview" | "full";
 
+export type Tile = {
+  texture: Texture;
+  mask?: Texture;
+  byteLength: number;
+  width: number;
+  height: number;
+}
+
 /**
  * A single cached tile entry.
  *
@@ -11,12 +19,7 @@ export type TileQuality = "preview" | "full";
  * without parsing string keys.  `lastAccessMs` drives the
  * LRU-inspired eviction policy.
  */
-export type CachedTile = {
-  texture: Texture;
-  mask?: Texture;
-  byteLength: number;
-  width: number;
-  height: number;
+export type CachedTile = Tile & {
   x: number;
   y: number;
   z: number;
