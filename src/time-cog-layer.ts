@@ -240,12 +240,11 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   initializeState(): void {
     const props = this.props;
     const tileCache = new SequenceTileCache(props.cachePolicy);
-    const geotiffRegistry = new GeoTIFFRegistry();
 
     this.setState({
       catalog: [],
       tileCache,
-      geotiffRegistry,
+      geotiffRegistry: new GeoTIFFRegistry(),
       prefetcher: new FramePrefetcher(
         tileCache,
         props.schedulerPolicy?.maxNetworkRequests ?? 4,

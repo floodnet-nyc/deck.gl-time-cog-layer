@@ -26,7 +26,7 @@ export {
 export { detectInteractionMode } from "./util/interaction-mode.js";
 export { computeCoverage, computeBufferState, isFrameReady } from "./util/frame-coverage.js";
 export type { BufferCoverage } from "./util/frame-coverage.js";
-export { buildBufferState, buildStats } from "./util/diagnostics/stats-collector.js";
+export { buildBufferState, buildStats } from "./util/stats-collector.js";
 export { extractCOGLayerProps, TIME_COG_EXCLUDED_KEYS } from "./util/cog-prop-keys.js";
 export type { TimeCOGExcludedKey } from "./util/cog-prop-keys.js";
 export { scheduleFrameWindow, applyMaxFrameRateBucking } from "./util/frame-scheduler.js";
@@ -41,8 +41,8 @@ export {
 } from "./util/tile-utils.js";
 export type { TimeCOGLayerProps } from "./time-cog-layer.js";
 export { TimeCOGLayer } from "./time-cog-layer.js";
-export type { TileDiagSnapshot } from "./util/diagnostics/tile-diagnostics.js";
-export { renderTileDiagnostics } from "./util/diagnostics/tile-diagnostics.js";
+export type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
+export { renderTileDiagnostics } from "./util/tile-diagnostics.js";
 export type {
   DescriptorManifest,
   DescriptorMode,
