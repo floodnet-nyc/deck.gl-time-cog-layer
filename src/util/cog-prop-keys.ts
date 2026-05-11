@@ -1,4 +1,5 @@
-import type { NormalizedTimeCOGFrame, TimeCOGLayerProps } from "../types";
+import type { NormalizedTimeCOGFrame } from "../types";
+import type { TimeCOGLayerProps } from "../time-cog-layer";
 
 /**
  * Keys that belong to {@link TimeCOGLayerProps} but are **not**

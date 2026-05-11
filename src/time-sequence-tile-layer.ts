@@ -1,6 +1,6 @@
 import type { Device, Texture } from "@luma.gl/core";
 import type { Layer } from "@deck.gl/core";
-import type { _Tile2DHeader as Tile2DHeader, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
+import type { _Tileset2DProps, _Tile2DHeader as Tile2DHeader, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
 import { TileLayer } from "@deck.gl/geo-layers";
 import {
   RasterTileLayer,
@@ -129,24 +129,36 @@ export class TimeSequenceTileLayer<
 
   renderLayers(): Layer | null {
     const descriptor = this._tilesetDescriptor();
-
-    if (!descriptor) {
-      return null;
-    }
-
     const getTileDataCallback = this._getTileDataCallback();
     const renderTileCallback = this._renderTileCallback();
 
-    if (!getTileDataCallback || !renderTileCallback) {
+    if (!descriptor || !getTileDataCallback || !renderTileCallback) {
       return null;
     }
-  
-    const resolvedDescriptor = descriptor;
+    // // Capture the device once so the inner `TilesetFactory` can read
+    // // its current effective device-pixel ratio per `getTileIndices`
+    // // call. The ratio is sampled lazily so window-drag-between-displays
+    // // (or runtime changes to `useDevicePixels`) take effect on the next
+    // // traversal. See dev-docs/lod-and-pixel-matching.md § (A).
+    // //
+    // // We compute drawingBuffer/CSS rather than using
+    // // `cssToDeviceRatio()` (deprecated) or the `devicePixelRatio`
+    // // property (always reflects the system value, ignoring
+    // // `Deck.useDevicePixels`). The drawing-buffer ratio is the
+    // // *effective* DPR Deck is rendering at.
+    // const device = this.context.device;
     class TilesetFactory extends RasterTileset2D {
-      constructor(
-        opts: ConstructorParameters<typeof RasterTileset2D>[0],
-      ) {
-        super(opts, resolvedDescriptor);
+      constructor(opts: _Tileset2DProps) {
+        super(opts, descriptor!, 
+        //   {
+        //   getPixelRatio: () => {
+        //     const ctx = device.getDefaultCanvasContext();
+        //     const [drawingBufferWidth] = ctx.getDrawingBufferSize();
+        //     const [cssWidth] = ctx.getCSSSize();
+        //     return cssWidth ? drawingBufferWidth / cssWidth : 1;
+        //   },
+        // }
+      );
       }
     }
 
@@ -181,7 +193,7 @@ export class TimeSequenceTileLayer<
       ): Layer[] => {
         return (base as any)._renderSubLayers(
           subProps,
-          resolvedDescriptor,
+          descriptor,
           renderTileCallback,
         );
       },
@@ -275,27 +287,17 @@ export class TimeSequenceTileLayer<
         return null as DataT;
       }
 
-      if (typeof result === "object" && "texture" in result) {
-        const r = result as unknown as {
-          texture: Texture;
-          mask?: Texture;
-          byteLength?: number;
-          width: number;
-          height: number;
-        };
-
-        tileCache.put(currentFrameId, x, y, z, {
-          x,
-          y,
-          z,
-          texture: r.texture,
-          mask: r.mask,
-          byteLength: r.byteLength ?? 0,
-          width: r.width,
-          height: r.height,
-          quality: "full",
-        });
-      }
+      tileCache.put(currentFrameId, x, y, z, {
+        x,
+        y,
+        z,
+        texture: (result as unknown as { texture: Texture }).texture,
+        mask: (result as unknown as { mask?: Texture }).mask,
+        byteLength: (result.byteLength as number | undefined) ?? 0,
+        width: result.width,
+        height: result.height,
+        quality: "full",
+      });
 
       return result;
     };

@@ -21,13 +21,167 @@ import { computeCoverage, computeBufferState } from "./util/frame-coverage.js";
 import { buildBufferState, buildStats } from "./util/stats-collector.js";
 import { mergeCogLayerProps } from "./util/cog-prop-keys.js";
 import type {
+  COGLayerPassThroughProps,
+  DescriptorManifest,
+  DescriptorMode,
+  InteractionMode,
+  MissingFramePolicy,
   NormalizedTimeCOGFrame,
   QualityPolicy,
-  TimeCOGLayerProps,
-  TimeCOGLayerState,
+  SchedulerPolicy,
+  TileCoord,
+  TimeCOGBufferPolicy,
+  TimeCOGBufferState,
+  TimeCOGCachePolicy,
+  TimeCOGFrame,
+  TimeCOGStats,
+  TimeValue,
 } from "./types.js";
 import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
+import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
 
+/**
+ * Props for {@link TimeCOGLayer}.
+ *
+ * Extends all COG rendering props (opacity, colormap, etc.) and
+ * adds the temporal orchestration knobs.
+ */
+
+export type TimeCOGLayerProps = COGLayerPassThroughProps & {
+  /** Ordered list of time → COG URL entries. */
+  frames: TimeCOGFrame[];
+  /** Current playback time (epoch ms, ISO string, or Date). */
+  currentTime: TimeValue;
+  /** Whether playback is active. */
+  playing?: boolean;
+  /**
+   * Playback speed multiplier.
+   * A value of 60 means 60× real-time (1 minute per second).
+   */
+  playbackRate?: number;
+  /** Maximum display frame rate during playback in frames per second (0 = unlimited).  Default 0. */
+  maxFrameRate?: number;
+  missingFramePolicy?: MissingFramePolicy;
+  bufferPolicy?: TimeCOGBufferPolicy;
+  cachePolicy?: TimeCOGCachePolicy;
+  qualityPolicy?: QualityPolicy;
+  schedulerPolicy?: SchedulerPolicy;
+  /**
+   * How the shared tileset descriptor is determined.
+   *
+   * - `'reuse-first'` (default): compute once from the first displayed
+   *   frame and never re-validate.
+   * - `'manifest'`: validate the first frame against {@link descriptorManifest}.
+   */
+  descriptorMode?: DescriptorMode;
+  /** Required when `descriptorMode` is `'manifest'`. */
+  descriptorManifest?: DescriptorManifest;
+  /** Fired when the display frame is fully cached at full resolution. */
+  onFrameReady?: (frame: NormalizedTimeCOGFrame) => void;
+  /** Fired when a new frame becomes the display frame. */
+  onFrameDisplayed?: (frame: NormalizedTimeCOGFrame) => void;
+  /** Fired when the requested time has no exact catalog match. */
+  onMissingFrame?: (timeMs: number) => void;
+  /** Fired when `descriptorMode: 'manifest'` detects a structural mismatch. */
+  onDescriptorMismatch?: (frame: NormalizedTimeCOGFrame, reason: string) => void;
+  onBufferStateChange?: (state: TimeCOGBufferState) => void;
+  onStats?: (stats: TimeCOGStats) => void;
+  /** Forwarded to the underlying COGLayer for the initial (representative) GeoTIFF. */
+  onGeoTIFFLoad?: COGLayerProps["onGeoTIFFLoad"];
+};/**
+ * Internal state for {@link TimeCOGLayer}.
+ *
+ * The state is intentionally flat so that deck.gl can shallow-diff it
+ * efficiently across the render / update cycle.  The three “shared
+ * infrastructure” fields — `tileCache`, `prefetcher`, and
+ * `visibleTileRef` — are created once in `initializeState` and live
+ * for the full lifetime of the layer.  The sublayer
+ * (`TimeSequenceTileLayer`) reads from them via props, so they must
+ * remain the **same object** across renders.
+ */
+
+export type TimeCOGLayerState = {
+  /** Full ordered catalog of every frame (time → URL).  Never mutated, only replaced when `frames` prop changes. */
+  catalog: NormalizedTimeCOGFrame[];
+
+  /**
+   * The shared GPU / CPU tile cache.
+   * Stores decoded textures keyed by `(frameId, tileX, tileY, zoom)`.
+   * Both the sublayer (`_getTileDataCallback`) and the
+   * `FramePrefetcher` read from and write to this cache, which is why
+   * it lives on the parent composite layer.
+   */
+  tileCache: SequenceTileCache;
+
+  /**
+   * Shared GeoTIFF instance registry.
+   * Both the sublayer and the prefetcher use this to open COG files,
+   * eliminating redundant header fetches.
+   */
+  geotiffRegistry: GeoTIFFRegistry;
+
+  /**
+   * Background prefetch pipeline.
+   * On every `updateState` it receives the current playback snapshot
+   * (target frame, scheduled frames, visible tiles, device, etc.) and
+   * proactively fetches tiles for nearby frames.
+   */
+  prefetcher: FramePrefetcher;
+
+  /**
+ 
+ 
+  /**
+   * Shared mutable reference that the inner TileLayer updates via its
+   * `onViewportLoad` callback.  The parent layer reads this on each
+   * `updateState` to feed the prefetcher.
+   */
+  visibleTileRef: { tiles: TileCoord[]; };
+
+  /**
+   * The GeoTIFF URL of the very first displayed frame.
+   * This URL is passed as the `geotiff` prop to the persistent
+   * `COGLayer` sublayer so that the shared tileset descriptor is
+   * parsed **once** and reused for the lifetime of the layer.
+   * Changing the `geotiff` URL would cause COGLayer to re-parse the
+   * header, tearing down the descriptor and inner TileLayer.
+   */
+  initialGeotiffUrl: string;
+
+  /** The current playback time, as a millisecond epoch. */
+  currentTimeMs: number;
+
+  /** The frame closest to `currentTimeMs` in the catalog. */
+  targetFrame: NormalizedTimeCOGFrame | null;
+
+  /**
+   * The frame that is actually visible on screen.
+   * May differ from `targetFrame` when the configured
+   * `missingFramePolicy` resolves to a fallback (e.g. `hold-last`).
+   */
+  displayFrame: NormalizedTimeCOGFrame | null;
+
+  /** Frames selected for prefetching, sorted by priority (target first). */
+  scheduledFrames: NormalizedTimeCOGFrame[];
+
+  /** True when the requested time has no exact match in the catalog. */
+  missing: boolean;
+
+  /** Tracks the most recently displayed frame so that `onFrameDisplayed` only fires on transitions. */
+  lastDisplayedFrameId: string | null;
+
+  /** Detected playback interaction state, derived from prop change frequency. */
+  interactionMode: InteractionMode;
+
+  /** `Date.now()` of the last user-triggered timing change (seek / scrub). */
+  lastInteractionMs: number;
+
+  /** Timer that fires `fullResUpgradeIdleMs` after the last interaction to trigger full-res upgrades. */
+  upgradeTimer: ReturnType<typeof setTimeout> | null;
+
+  /** Frame IDs that have already fired `onFrameReady` to avoid duplicate signals. */
+  readyFrameIds: Set<string>;
+};
 
 const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
 

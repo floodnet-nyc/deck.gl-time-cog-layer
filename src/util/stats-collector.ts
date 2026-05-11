@@ -2,9 +2,9 @@ import type { SequenceTileCache } from "../sequence-tile-cache.js";
 import type { FramePrefetcher } from "../frame-prefetcher.js";
 import type {
   TimeCOGBufferState,
-  TimeCOGLayerState,
   TimeCOGStats,
 } from "../types.js";
+import type { TimeCOGLayerState } from "../time-cog-layer.js";
 
 /**
  * Build the buffer-state payload for `onBufferStateChange`.
