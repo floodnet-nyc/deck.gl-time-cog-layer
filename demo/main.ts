@@ -289,7 +289,7 @@ function render(): void {
     renderTile: renderPrecipTile,
     opacity: DISPLAY_OPACITY,
     missingFramePolicy: "nearest",
-    maxFrameRate: 5,
+    maxFrameRate: 15,
     qualityPolicy: {
       lowResFirst: false,
     },

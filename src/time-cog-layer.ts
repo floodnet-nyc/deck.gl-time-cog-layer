@@ -21,7 +21,6 @@ import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 import { detectInteractionMode } from "./util/interaction-mode.js";
 import { computeCoverage, computeBufferState } from "./util/frame-coverage.js";
 import { buildBufferState, buildStats } from "./util/stats-collector.js";
-import { mergeCogLayerProps } from "./util/cog-prop-keys.js";
 import type {
   COGLayerPassThroughProps,
   DescriptorManifest,
@@ -325,54 +324,71 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       return null;
     }
 
+    // Get passThrough props by excluding this layer's props
+    const {
+      id,
+      frames,
+      currentTime,
+      playing,
+      playbackRate,
+      maxFrameRate,
+
+      descriptorMode,
+      descriptorManifest,
+
+      missingFramePolicy,
+      bufferPolicy,
+      cachePolicy,
+      qualityPolicy,
+      schedulerPolicy,
+
+      onFrameReady,
+      onFrameDisplayed,
+      onMissingFrame,
+      onDescriptorMismatch,
+      onBufferStateChange,
+      onStats,
+      getTileData,
+      
+      renderTile,
+      loadOptions,
+      updateTriggers,
+      onViewportLoad,
+      onGeoTIFFLoad,
+      ...passThrough
+    } = this.props;
+
     const initialUrl = state.initialGeotiffUrl || frame.url;
-    const passThrough = mergeCogLayerProps(this.props, frame);
-    const userGeoTiff = this.props.onGeoTIFFLoad;
-    let onGeoTIFFLoad = userGeoTiff;
-
-    if (this.props.descriptorMode === "manifest" && this.props.descriptorManifest) {
-      const manifest = this.props.descriptorManifest;
-
-      onGeoTIFFLoad = (geotiff: any, options: any) => {
-        if (geotiff) {
-          const mismatches: string[] = [];
-
-          if (geotiff.overviews.length + 1 !== manifest.overviewCount) {
-            mismatches.push(`overviewCount: expected ${manifest.overviewCount}, got ${geotiff.overviews.length + 1}`);
-          }
-
-          if (mismatches.length > 0) {
-            this.props.onDescriptorMismatch?.(frame, mismatches.join("; "));
-          }
-        }
-
-        userGeoTiff?.(geotiff, options);
-      }
-    }
 
     return new TimeSequenceTileLayer({
       ...passThrough,
-      id: `${this.props.id}-tiles`,
+      id: `${id}-tiles`,
       geotiff: initialUrl,
       getTileData: this._getTileDataCallback(frame),
-      renderTile: this.props.renderTile,
+      renderTile,
+      loadOptions: frame.requestInit ? {
+        ...loadOptions,
+        fetch: {
+          ...loadOptions?.fetch,
+          ...frame.requestInit,
+        }
+      } : loadOptions,
       updateTriggers: {
-        renderSubLayers: this.props.updateTriggers?.renderTile,
-        ...this.props.updateTriggers,
+        renderSubLayers: updateTriggers?.renderTile,
+        ...updateTriggers,
         getTileData: frame.id,
       },
+      onGeoTIFFLoad: this._getOnGeoTiffLoadCallback(frame),
       onViewportLoad: (loadedTiles: _Tile2DHeader<Record<string, unknown>>[]) => {
         if (state.visibleTileRef) {
           state.visibleTileRef.tiles = loadedTiles.map(({ index: { x, y, z } }) => ({ x, y, z }));
         }
 
         this.updatePrefetch();
-        this.props.onViewportLoad?.(loadedTiles);
+        onViewportLoad?.(loadedTiles);
       },
-      onGeoTIFFLoad: onGeoTIFFLoad ?? undefined,
     } as object);
   }
-
 
   protected _getTileDataCallback(frame: NormalizedTimeCOGFrame): ((props: TileLoadProps, options: { device: Device; signal?: AbortSignal }) => Promise<any>) | undefined {
     const tileCache = this.state.tileCache;
@@ -424,6 +440,36 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
       return result;
     };
+  }
+
+  protected _getOnGeoTiffLoadCallback(frame: NormalizedTimeCOGFrame): COGLayerProps["onGeoTIFFLoad"] {
+    const userCallback = this.props.onGeoTIFFLoad;
+
+    if (!this.props.descriptorMode || this.props.descriptorMode === "reuse-first") {
+      return userCallback;
+    }
+
+    if (this.props.descriptorMode === "manifest" && this.props.descriptorManifest) {
+      const manifest = this.props.descriptorManifest;
+
+      return (geotiff: any, options: any) => {
+        if (geotiff) {
+          const mismatches: string[] = [];
+
+          if (geotiff.overviews.length + 1 !== manifest.overviewCount) {
+            mismatches.push(`overviewCount: expected ${manifest.overviewCount}, got ${geotiff.overviews.length + 1}`);
+          }
+
+          if (mismatches.length > 0) {
+            this.props.onDescriptorMismatch?.(frame, mismatches.join("; "));
+          }
+        }
+
+        userCallback?.(geotiff, options);
+      }
+    }
+
+    return userCallback;
   }
 
   /**
