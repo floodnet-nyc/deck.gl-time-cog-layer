@@ -5,7 +5,7 @@ import type {
 } from "@deck.gl/core";
 import { CompositeLayer } from "@deck.gl/core";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
-import type { _Tileset2DProps, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
+import type { _Tile2DHeader, _Tileset2DProps, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
 import type { Device } from "@luma.gl/core";
 import {
   findNearestFrameIndex,
@@ -90,6 +90,8 @@ export type TimeCOGLayerProps = COGLayerPassThroughProps & {
   onStats?: (stats: TimeCOGStats) => void;
   /** Forwarded to the underlying COGLayer for the initial (representative) GeoTIFF. */
   onGeoTIFFLoad?: COGLayerProps["onGeoTIFFLoad"];
+  /** Optional callback fired whenever the visible tile set changes. */
+  onViewportLoad?: (tiles: _Tile2DHeader<Record<string, unknown>>[]) => void;
 };/**
  * Internal state for {@link TimeCOGLayer}.
  *
@@ -365,12 +367,24 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       geotiff: initialUrl,
       getTileData: this._getTileDataCallback(frame),
       renderTile: this.props.renderTile,
-      currentFrameId: frame.id,
-      currentFrameRequestInit: frame.requestInit,
       previewBias: bias,
-      visibleTileRef: state.visibleTileRef,
-      geotiffRegistry: state.geotiffRegistry,
-      // onVisibleTilesChange: () => this.updatePrefetch(),
+      updateTriggers: {
+        renderSubLayers: this.props.updateTriggers?.renderTile,
+        ...this.props.updateTriggers,
+        getTileData: frame.id,
+      },
+      onViewportLoad: (loadedTiles: _Tile2DHeader<Record<string, unknown>>[]) => {
+        if (state.visibleTileRef) {
+          state.visibleTileRef.tiles = loadedTiles.map((t) => ({
+            x: t.index.x,
+            y: t.index.y,
+            z: t.index.z,
+          }));
+        }
+
+        this.updatePrefetch();
+        this.props.onViewportLoad?.(loadedTiles);
+      },
       onGeoTIFFLoad: onGeoTIFFLoad ?? undefined,
     } as object);
   }

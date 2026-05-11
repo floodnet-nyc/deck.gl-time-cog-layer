@@ -11,23 +11,15 @@ import type {
   MinimalTileData,
 } from "@developmentseed/deck.gl-geotiff";
 import { COGLayer } from "@developmentseed/deck.gl-geotiff";
-import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
-import type { TileCoord } from "./types.ts";
 
 /**
  * Custom props injected by {@link TimeCOGLayer} into the persistent
  * sublayer.  These carry the dynamic frame identity, the shared tile
- * cache, the mutable visible-tile reference, and the preview bias so
- * that every `getTileData` invocation can check the cache for the
- * current frame and fall back to coarser preview tiles on miss.
+ * cache, and the preview bias so that every `getTileData` invocation can
+ * check the cache for the current frame and fall back to coarser preview
+ * tiles on miss.
  */
 export type TimeSequenceTileLayerProps = {
-  /** Stable identifier of the currently displayed frame (its catalog `id`).  Used as the cache prefix and in `updateTriggers.all`. */
-  currentFrameId: string;
-
-  /** Optional `RequestInit` forwarded to `fetch()` when opening this frame's COG (e.g. SAS headers). */
-  currentFrameRequestInit?: RequestInit;
-
   /**
    * When > 0, the sublayer fetches at a coarser zoom level on cache
    * miss and stores the result as a "preview" tile.  Set by the
@@ -37,20 +29,6 @@ export type TimeSequenceTileLayerProps = {
   previewBias?: number;
 
   getTileData?: (props: TileLoadProps, options: { device: Device; signal?: AbortSignal }) => Promise<any>;
-
-  /** Mutable reference updated by the inner TileLayer's `onViewportLoad` callback. */
-  visibleTileRef: { tiles: TileCoord[] };
-
-  /** Optional callback fired whenever the visible tile set changes. */
-  onVisibleTilesChange?: () => void;
-
-  /**
-   * Optional shared GeoTIFF registry.  When provided, the sublayer
-   * uses this registry instead of its own internal `geotiffByUrl`
-   * Map, eliminating duplicate COG header fetches between the render
-   * path and the background prefetcher.
-   */
-  geotiffRegistry?: GeoTIFFRegistry;
 
   onViewportLoad?: ((tiles: Tile2DHeader<Record<string, unknown>>[]) => void);
 };
@@ -102,9 +80,6 @@ export class TimeSequenceTileLayer<
   static layerName = "TimeSequenceTileLayer";
 
   declare props: COGLayer<DataT>["props"] & TimeSequenceTileLayerProps;
-  // declare state: COGLayer<DataT>["state"] & {
-  //   lastFrameId?: string;
-  // };
 
   renderLayers(): Layer | null {
     const descriptor = this._tilesetDescriptor();
@@ -150,8 +125,6 @@ export class TimeSequenceTileLayer<
     };
 
     const {
-      visibleTileRef, currentFrameId, onVisibleTilesChange,
-
       tileSize,
       zoomOffset,
       maxZoom,
@@ -163,6 +136,7 @@ export class TimeSequenceTileLayer<
       maxRequests,
       refinementStrategy,
       updateTriggers,
+      onViewportLoad,
     } = this.props;
 
     return new TileLayer({
@@ -187,11 +161,7 @@ export class TimeSequenceTileLayer<
           renderTile,
         );
       },
-      updateTriggers: {
-        getTileData: currentFrameId,
-        // all: Math.round(this.context.viewport?.zoom ?? 0),
-        renderSubLayers: updateTriggers?.renderTile,
-      },
+      updateTriggers,
       tileSize,
       zoomOffset,
       maxZoom,
@@ -202,18 +172,7 @@ export class TimeSequenceTileLayer<
       maxCacheByteSize,
       maxRequests,
       refinementStrategy,
-      onViewportLoad: (loadedTiles: Tile2DHeader<Record<string, unknown>>[]) => {
-        if (visibleTileRef) {
-          visibleTileRef.tiles = loadedTiles.map((t) => ({
-            x: t.index.x,
-            y: t.index.y,
-            z: t.index.z,
-          }));
-        }
-
-        onVisibleTilesChange?.();
-        this.props.onViewportLoad?.(loadedTiles);
-      },
+      onViewportLoad,
     });
   }
 
