@@ -6,7 +6,6 @@ import type {
 } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import type { SequenceTileCache } from "./sequence-tile-cache.js";
-import { openGeoTIFF } from "./util/geotiff-source.js";
 import { hasTile, imageForZ, isMissingTileError } from "./util/tile-utils.js";
 import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWeights } from "./types.js";
 import { TaskQueue, taskKey, type TileCoord, type TileTask } from "./task-queue.js";
@@ -15,7 +14,7 @@ import {
   qualityForTask,
   type ScoringContext,
 } from "./util/task-scorer.js";
-import type { GeoTIFFRegistry } from "./util/geotiff-registry.js";
+import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 
 /** The current playback snapshot, passed from `TimeCOGLayer.updateState`. */
 type PrefetchSnapshot = {
@@ -94,10 +93,11 @@ export class FramePrefetcher {
 
   private defaultScoringWeights: ScoringWeights;
 
-  private geotiffRegistry: GeoTIFFRegistry | null = null;
+  /** Internal fallback registry.  Used when no shared registry is wired via `update()`. */
+  private internalRegistry = new GeoTIFFRegistry(8);
 
-  /** Backward-compat geotiff map used when no shared registry is wired. */
-  private localGeotiffs = new Map<string, GeoTIFF>();
+  /** Shared registry injected by the coordinator.  Preferred when set. */
+  private sharedRegistry: GeoTIFFRegistry | null = null;
 
   constructor(
     tileCache: SequenceTileCache,
@@ -129,16 +129,9 @@ export class FramePrefetcher {
     return this.taskQueue.queuedKeys;
   }
 
-  /**
-   * Expose the currently-active GeoTIFF store as a writable Map for
-   * backward compatibility with tests that pre-populate fake GeoTIFF
-   * objects via `prefetcher.geotiffs.set(...)`.
-   */
+  /** @internal Exposed for test pre-population (`prefetcher.geotiffs.set(...)`). */
   get geotiffs(): Map<string, GeoTIFF> {
-    if (this.geotiffRegistry) {
-      return this.geotiffRegistry.mutableMap;
-    }
-    return this.localGeotiffs;
+    return (this.sharedRegistry ?? this.internalRegistry).mutableMap;
   }
 
   update(snapshot: PrefetchSnapshot): void {
@@ -147,7 +140,7 @@ export class FramePrefetcher {
     this.pool = snapshot.pool;
     this.layerSignal = snapshot.signal;
     this.uploadsThisFrame = 0;
-    this.geotiffRegistry = snapshot.geotiffRegistry ?? null;
+    this.sharedRegistry = snapshot.geotiffRegistry ?? null;
 
     const scheduledIds = new Set(snapshot.scheduledFrames.map((f) => f.id));
 
@@ -312,7 +305,7 @@ export class FramePrefetcher {
 
   destroy(): void {
     this.abortAll();
-    this.localGeotiffs.clear();
+    this.internalRegistry.clear();
   }
 
   getInFlightKeys(): string[] {
@@ -373,37 +366,15 @@ export class FramePrefetcher {
     const t0 = performance.now();
 
     try {
-      let geotiff: GeoTIFF | undefined;
+      const registry = this.sharedRegistry ?? this.internalRegistry;
+      let geotiff = registry.get(task.frameId);
 
-      if (this.geotiffRegistry) {
-        geotiff = this.geotiffRegistry.get(task.frameId);
-
-        if (!geotiff) {
-          geotiff = await this.geotiffRegistry.open(
-            task.frameId,
-            task.frameUrl,
-            task.requestInit,
-          );
-        }
-      } else {
-        geotiff = this.localGeotiffs.get(task.frameId);
-
-        if (!geotiff) {
-          const MAX_LOCAL_GEOTIFF_CACHE = 8;
-
-          if (this.localGeotiffs.size >= MAX_LOCAL_GEOTIFF_CACHE) {
-            const firstKey = this.localGeotiffs.keys().next().value;
-
-            if (firstKey) {
-              this.localGeotiffs.delete(firstKey);
-            }
-          }
-
-          geotiff = await openGeoTIFF(task.frameUrl, {
-            requestInit: task.requestInit,
-          });
-          this.localGeotiffs.set(task.frameId, geotiff);
-        }
+      if (!geotiff) {
+        geotiff = await registry.open(
+          task.frameId,
+          task.frameUrl,
+          task.requestInit,
+        );
       }
 
       const image = imageForZ(geotiff, task.z);
@@ -412,13 +383,10 @@ export class FramePrefetcher {
         return;
       }
 
-      let signal: AbortSignal | undefined;
-
-      if (this.layerSignal && controller.signal) {
-        signal = AbortSignal.any([this.layerSignal, controller.signal]);
-      } else {
-        signal = this.layerSignal ?? controller.signal;
-      }
+      const signal = (
+        this.layerSignal && controller.signal
+          ? AbortSignal.any([this.layerSignal, controller.signal])
+          : (this.layerSignal ?? controller.signal));
 
       if (!this.getUserTileDataFn || !this.device) {
         return;
