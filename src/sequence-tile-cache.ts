@@ -96,6 +96,7 @@ function tileKey(
 export class SequenceTileCache {
   private tiles = new Map<string, CachedTile>();
   private protected = new Set<string>();
+  private retiredTextures = new Set<Texture>();
   private policy: TileCachePolicy = {};
   private hitCount = 0;
   private missCount = 0;
@@ -260,11 +261,15 @@ export class SequenceTileCache {
    */
   destroy(): void {
     for (const tile of this.tiles.values()) {
-      tile.texture.destroy();
-      tile.mask?.destroy();
+      this.retireTile(tile);
+    }
+
+    for (const texture of this.retiredTextures) {
+      texture.destroy();
     }
 
     this.tiles.clear();
+    this.retiredTextures.clear();
     this.protected.clear();
   }
 
@@ -506,6 +511,12 @@ export class SequenceTileCache {
   private retireTile(tile: CachedTile): void {
     tile.texture.destroy();
     tile.mask?.destroy();
+
+    // TODO: there seems to be a bug sometimes seen with the destroy commands above. But it's intermittent and I'm not sure if the alternative below is necessary.
+    // this.retiredTextures.add(tile.texture);
+    // if (tile.mask) {
+    //   this.retiredTextures.add(tile.mask);
+    // }
 
     this.evictedTotal += 1;
 
