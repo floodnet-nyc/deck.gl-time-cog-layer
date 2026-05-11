@@ -135,17 +135,14 @@ export class TimeSequenceTileLayer<
       return null;
     }
 
-    const resolvedDescriptor = descriptor;
+    const getTileDataCallback = this._getTileDataCallback();
+    const renderTileCallback = this._renderTileCallback();
 
-    const tileFetchFn = this._getTileDataCallback();
-    const renderTileFn = this._renderTileCallback();
-
-    if (!tileFetchFn || !renderTileFn) {
+    if (!getTileDataCallback || !renderTileCallback) {
       return null;
     }
-
-    const { visibleTileRef, currentFrameId, onVisibleTilesChange } = this.props;
-
+  
+    const resolvedDescriptor = descriptor;
     class TilesetFactory extends RasterTileset2D {
       constructor(
         opts: ConstructorParameters<typeof RasterTileset2D>[0],
@@ -154,6 +151,11 @@ export class TimeSequenceTileLayer<
       }
     }
 
+    const {
+      visibleTileRef, currentFrameId, onVisibleTilesChange, 
+      updateTriggers, signal: userSignal, onViewportLoad: userOnViewportLoad 
+    } = this.props;
+
     const base = this as unknown as {
       _renderSubLayers: (
         subProps: Record<string, unknown>,
@@ -161,25 +163,12 @@ export class TimeSequenceTileLayer<
         rt: (data: DataT) => RenderTileResult | null,
       ) => Layer[];
     };
-    const updateTriggers = this.props.updateTriggers;
-    const userSignal = this.props.signal;
-    const userOnViewportLoad = this.props.onViewportLoad;
-
-    const renderSubLayers = (
-      subProps: Record<string, unknown>,
-    ): Layer[] => {
-      return base._renderSubLayers(
-        subProps,
-        resolvedDescriptor,
-        renderTileFn,
-      );
-    };
 
     return new TileLayer({
       id: `raster-tile-layer-${this.id}`,
       TilesetClass: TilesetFactory,
       getTileData: (tile: TileLoadProps) => {
-        return tileFetchFn(tile, {
+        return getTileDataCallback(tile, {
           device: this.context.device,
           signal: (
             userSignal && tile.signal
@@ -188,7 +177,15 @@ export class TimeSequenceTileLayer<
           ),
         });
       },
-      renderSubLayers,
+      renderSubLayers: (
+        subProps: Record<string, unknown>,
+      ): Layer[] => {
+        return (base as any)._renderSubLayers(
+          subProps,
+          resolvedDescriptor,
+          renderTileCallback,
+        );
+      },
       updateTriggers: {
         getTileData: currentFrameId,
         // all: Math.round(this.context.viewport?.zoom ?? 0),
@@ -223,13 +220,11 @@ export class TimeSequenceTileLayer<
     RasterTileLayer<DataT>["_getTileDataCallback"]
   > {
     const tileCache = this.props.sequenceTileCache;
-
     if (!tileCache) {
       return undefined;
     }
 
     const userFn = this.props.getTileData ?? this.state.defaultGetTileData;
-
     if (!userFn) {
       return undefined;
     }
