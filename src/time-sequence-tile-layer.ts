@@ -12,9 +12,7 @@ import type {
 } from "@developmentseed/deck.gl-geotiff";
 import { COGLayer } from "@developmentseed/deck.gl-geotiff";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
-import type { SequenceTileCache } from "./sequence-tile-cache.js";
-
-type TileCoord = { x: number; y: number; z: number };
+import type { TileCoord } from "./types.ts";
 
 /**
  * Custom props injected by {@link TimeCOGLayer} into the persistent
@@ -24,14 +22,8 @@ type TileCoord = { x: number; y: number; z: number };
  * current frame and fall back to coarser preview tiles on miss.
  */
 export type TimeSequenceTileLayerProps = {
-  /** Shared GPU tile cache — the key integration point between the sublayer and the background prefetcher. */
-  sequenceTileCache: SequenceTileCache;
-
   /** Stable identifier of the currently displayed frame (its catalog `id`).  Used as the cache prefix and in `updateTriggers.all`. */
   currentFrameId: string;
-
-  /** URL of the currently displayed frame's COG.  Opened lazily for tile fetches. */
-  currentFrameUrl: string;
 
   /** Optional `RequestInit` forwarded to `fetch()` when opening this frame's COG (e.g. SAS headers). */
   currentFrameRequestInit?: RequestInit;
@@ -62,8 +54,6 @@ export type TimeSequenceTileLayerProps = {
 
   onViewportLoad?: ((tiles: Tile2DHeader<Record<string, unknown>>[]) => void);
 };
-
-const TIME_SEQ_TILE_LAYER_NAME = "TimeSequenceTileLayer";
 
 /**
  * The persistent sublayer that `TimeCOGLayer` renders.
@@ -109,12 +99,12 @@ const TIME_SEQ_TILE_LAYER_NAME = "TimeSequenceTileLayer";
 export class TimeSequenceTileLayer<
   DataT extends MinimalTileData = MinimalTileData,
 > extends COGLayer<DataT> {
-  static layerName = TIME_SEQ_TILE_LAYER_NAME;
+  static layerName = "TimeSequenceTileLayer";
 
   declare props: COGLayer<DataT>["props"] & TimeSequenceTileLayerProps;
-  declare state: COGLayer<DataT>["state"] & {
-    lastFrameId?: string;
-  };
+  // declare state: COGLayer<DataT>["state"] & {
+  //   lastFrameId?: string;
+  // };
 
   renderLayers(): Layer | null {
     const descriptor = this._tilesetDescriptor();

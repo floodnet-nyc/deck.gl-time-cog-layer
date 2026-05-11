@@ -365,9 +365,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       geotiff: initialUrl,
       getTileData: this._getTileDataCallback(frame),
       renderTile: this.props.renderTile,
-      sequenceTileCache: state.tileCache,
       currentFrameId: frame.id,
-      currentFrameUrl: frame.url,
       currentFrameRequestInit: frame.requestInit,
       previewBias: bias,
       visibleTileRef: state.visibleTileRef,
@@ -385,8 +383,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       return undefined;
     }
 
-    const userFn = this.props.getTileData;
-    if (!userFn) {
+    const getTileData = this.props.getTileData;
+    if (!getTileData) {
       return undefined;
     }
 
@@ -405,12 +403,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       tileCache.recordMiss();
 
       const result = await registry.decodeTile(
-        id,
-        url,
-        x,
-        y,
-        z,
-        userFn,
+        id, url, x, y, z,
+        getTileData,
         {
           device: options.device,
           signal: options.signal,

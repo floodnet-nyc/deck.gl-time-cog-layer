@@ -73,7 +73,7 @@ export class FramePrefetcher {
   private maxConcurrent: number;
 
   private device: Device | null = null;
-  private getUserTileDataFn: PrefetchSnapshot["getUserTileData"] | null = null;
+  private getTileData: PrefetchSnapshot["getUserTileData"] | null = null;
   private pool: DecoderPool | null = null;
   private layerSignal: AbortSignal | undefined;
   private uploadsThisFrame = 0;
@@ -135,7 +135,7 @@ export class FramePrefetcher {
 
   update(snapshot: PrefetchSnapshot): void {
     this.device = snapshot.device;
-    this.getUserTileDataFn = snapshot.getUserTileData;
+    this.getTileData = snapshot.getUserTileData;
     this.pool = snapshot.pool;
     this.layerSignal = snapshot.signal;
     this.uploadsThisFrame = 0;
@@ -352,9 +352,10 @@ export class FramePrefetcher {
   }
 
   private async executeTask(task: TileTask): Promise<void> {
-    const key = taskKey(task.frameId, task.x, task.y, task.z);
+    const { frameId: id, frameUrl: url, x, y, z } = task;
+    const key = taskKey(id, x, y, z);
 
-    if (this.tileCache.get(task.frameId, task.x, task.y, task.z)) {
+    if (this.tileCache.get(id, x, y, z)) {
       return;
     }
 
@@ -367,25 +368,20 @@ export class FramePrefetcher {
     try {
       const registry = this.sharedRegistry ?? this.internalRegistry;
 
-      if (!this.getUserTileDataFn || !this.device) {
+      if (!this.getTileData || !this.device) {
         return;
       }
 
-      const signal =
-        this.layerSignal && controller.signal
-          ? AbortSignal.any([this.layerSignal, controller.signal])
-          : (this.layerSignal ?? controller.signal);
-
       const result = await registry.decodeTile(
-        task.frameId,
-        task.frameUrl,
-        task.x,
-        task.y,
-        task.z,
-        this.getUserTileDataFn,
+        id, url, x, y, z,
+        this.getTileData,
         {
           device: this.device,
-          signal,
+          signal: (
+            this.layerSignal && controller.signal
+            ? AbortSignal.any([this.layerSignal, controller.signal])
+            : (this.layerSignal ?? controller.signal)
+          ),
           pool: this.pool,
           requestInit: task.requestInit,
         },
@@ -398,10 +394,8 @@ export class FramePrefetcher {
       const elapsed = performance.now() - t0;
 
       if (result.texture) {
-        this.tileCache.put(task.frameId, task.x, task.y, task.z, {
-          x: task.x,
-          y: task.y,
-          z: task.z,
+        this.tileCache.put(id, x, y, z, {
+          x, y, z,
           texture: result.texture,
           mask: result.mask,
           byteLength: result.byteLength ?? 0,
@@ -411,7 +405,7 @@ export class FramePrefetcher {
         });
 
         if (elapsed > 0 && result.byteLength) {
-          this.recordTelemetry(elapsed, result.byteLength, task.frameId);
+          this.recordTelemetry(elapsed, result.byteLength, id);
         }
       }
     } catch (err) {
