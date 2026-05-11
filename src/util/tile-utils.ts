@@ -1,6 +1,9 @@
 import type { Device } from "@luma.gl/core";
 import type { GeoTIFF, Overview, DecoderPool } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
+import { epsgResolver, makeClampedForwardTo3857, metersPerUnit, parseWkt, } from "@developmentseed/proj";
+import proj4 from "proj4";
+import { geoTiffToDescriptor } from "./geotiff-tileset";
 
 export function imageForZ(
   geotiff: GeoTIFF,
@@ -60,6 +63,52 @@ export async function decodeGeoTIFFTile<T>(
     throw error;
   }
 }
+
+export async function getGeoTiffDescriptor(geotiff: GeoTIFF) {
+  const crs = geotiff.crs;
+  const sourceProjection =
+    typeof crs === "number"
+      ? await epsgResolver!(crs)
+      : parseWkt(crs);
+
+  // @ts-expect-error - proj4 typings are incomplete and don't support
+  // wkt-parser input
+  const converter4326 = proj4(sourceProjection, "EPSG:4326");
+  const projectTo4326 = (x: number, y: number) =>
+    converter4326.forward<[number, number]>([x, y], false);
+  const projectFrom4326 = (x: number, y: number) =>
+    converter4326.inverse<[number, number]>([x, y], false);
+
+  // @ts-expect-error - proj4 typings are incomplete and don't support
+  // wkt-parser input
+  const converter3857 = proj4(sourceProjection, "EPSG:3857");
+  const projectTo3857 = makeClampedForwardTo3857(
+    (x: number, y: number) =>
+      converter3857.forward<[number, number]>([x, y], false),
+    projectTo4326,
+  );
+  const projectFrom3857 = (x: number, y: number) =>
+    converter3857.inverse<[number, number]>([x, y], false);
+
+  const units = sourceProjection.units;
+  if (!units) {
+    throw new Error(
+      "Source projection is missing 'units' property, cannot compute meters per unit",
+    );
+  }
+  const mpu = metersPerUnit(units as Parameters<typeof metersPerUnit>[0], {
+    semiMajorAxis: sourceProjection.datum?.a ?? sourceProjection.a,
+  });
+
+  return geoTiffToDescriptor(geotiff, {
+    projectTo4326,
+    projectFrom4326,
+    projectTo3857,
+    projectFrom3857,
+    mpu,
+  });
+}
+
 
 /**
  * Map tile coordinates to a coarser zoom level for preview fetches.
