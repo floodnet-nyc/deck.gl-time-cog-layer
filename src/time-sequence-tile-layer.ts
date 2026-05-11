@@ -180,21 +180,19 @@ export class TimeSequenceTileLayer<
       id: `raster-tile-layer-${this.id}`,
       TilesetClass: TilesetFactory,
       getTileData: (tile: TileLoadProps) => {
-        const { signal: tileSignal } = tile;
-        const signal =
-          userSignal && tileSignal
-            ? AbortSignal.any([userSignal, tileSignal])
-            : (userSignal ?? tileSignal);
-        const options = {
+        return tileFetchFn(tile, {
           device: this.context.device,
-          signal,
-        };
-        return tileFetchFn(tile, options);
+          signal: (
+            userSignal && tile.signal
+            ? AbortSignal.any([userSignal, tile.signal])
+            : (userSignal ?? tile.signal)
+          ),
+        });
       },
       renderSubLayers,
       updateTriggers: {
         getTileData: currentFrameId,
-        all: Math.round(this.context.viewport?.zoom ?? 0),
+        // all: Math.round(this.context.viewport?.zoom ?? 0),
         renderSubLayers: updateTriggers?.renderTile,
       },
       tileSize: this.props.tileSize,
