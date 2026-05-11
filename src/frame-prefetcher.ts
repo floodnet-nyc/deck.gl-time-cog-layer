@@ -409,7 +409,7 @@ export class FramePrefetcher {
         }
       }
     } catch (err) {
-      if ((err as Error)?.name === "AbortError") {
+      if ((err as Error)?.name === "AbortError" || ((err as Error)?.cause as Error)?.name === "AbortError") {
         this.abortedTasks += 1;
       } else if (!isMissingTileError(err)) {
         console.warn("FramePrefetcher: tile fetch failed", err);
