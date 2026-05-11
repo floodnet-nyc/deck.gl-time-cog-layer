@@ -383,11 +383,6 @@ export class FramePrefetcher {
         return;
       }
 
-      const signal = (
-        this.layerSignal && controller.signal
-          ? AbortSignal.any([this.layerSignal, controller.signal])
-          : (this.layerSignal ?? controller.signal));
-
       if (!this.getUserTileDataFn || !this.device) {
         return;
       }
@@ -396,7 +391,10 @@ export class FramePrefetcher {
         device: this.device,
         x: task.x,
         y: task.y,
-        signal,
+        signal: (
+        this.layerSignal && controller.signal
+          ? AbortSignal.any([this.layerSignal, controller.signal])
+          : (this.layerSignal ?? controller.signal)),
         pool: this.pool ?? defaultDecoderPool(),
       });
 
