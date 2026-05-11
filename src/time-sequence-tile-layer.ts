@@ -13,10 +13,9 @@ import type {
 } from "@developmentseed/deck.gl-geotiff";
 import { COGLayer } from "@developmentseed/deck.gl-geotiff";
 import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
-import { defaultDecoderPool } from "@developmentseed/geotiff";
-import type { TileQuality, SequenceTileCache } from "./sequence-tile-cache.js";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
-import { hasTile, imageForZ, isMissingTileError } from "./util/tile-utils.js";
+import type { SequenceTileCache } from "./sequence-tile-cache.js";
+import { decodeGeoTIFFTile } from "./util/tile-utils.js";
 
 type TileCoord = { x: number; y: number; z: number };
 
@@ -259,7 +258,7 @@ export class TimeSequenceTileLayer<
       tileCache.recordMiss();
 
       const registry = this.props.geotiffRegistry ?? this._localRegistry!;
-      let geotiff: GeoTIFF | undefined = registry.get(currentFrameId);
+      let geotiff = registry.get(currentFrameId);
 
       if (!geotiff) {
         geotiff = await registry.open(
@@ -269,39 +268,27 @@ export class TimeSequenceTileLayer<
         );
       }
 
-      const image = imageForZ(geotiff, z);
-      const quality: TileQuality = "full";
+      const result = await decodeGeoTIFFTile(
+        geotiff,
+        x,
+        y,
+        z,
+        userFn as (
+          img: GeoTIFF | Overview,
+          opts: GetTileDataOptions,
+        ) => Promise<DataT>,
+        {
+          device: options.device,
+          signal: options.signal,
+          pool: this.props.pool,
+        },
+      );
 
-      if (!image || !hasTile(image, x, y)) {
+      if (!result) {
         return null as DataT;
       }
 
-      const getTileDataOptions: GetTileDataOptions = {
-        device: options.device,
-        x,
-        y,
-        signal: options.signal,
-        pool: this.props.pool ?? defaultDecoderPool(),
-      };
-
-      let result: DataT;
-
-      try {
-        result = await (
-          userFn as (
-            img: GeoTIFF | Overview,
-            opts: GetTileDataOptions,
-          ) => Promise<DataT>
-        )(image, getTileDataOptions);
-      } catch (error) {
-        if (isMissingTileError(error)) {
-          return null as DataT;
-        }
-
-        throw error;
-      }
-
-      if (result && typeof result === "object" && "texture" in result) {
+      if (typeof result === "object" && "texture" in result) {
         const r = result as unknown as {
           texture: Texture;
           mask?: Texture;
@@ -319,7 +306,7 @@ export class TimeSequenceTileLayer<
           byteLength: r.byteLength ?? 0,
           width: r.width,
           height: r.height,
-          quality,
+          quality: "full",
         });
       }
 

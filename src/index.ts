@@ -33,6 +33,7 @@ export { scheduleFrameWindow, applyMaxFrameRateBucking } from "./util/frame-sche
 export type { CachedTile, TileCachePolicy, TileCacheStats, TileQuality } from "./sequence-tile-cache.js";
 export { SequenceTileCache } from "./sequence-tile-cache.js";
 export {
+  decodeGeoTIFFTile,
   hasTile,
   imageForZ,
   isMissingTileError,

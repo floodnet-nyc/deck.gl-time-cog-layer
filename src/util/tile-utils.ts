@@ -1,4 +1,6 @@
-import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
+import type { Device } from "@luma.gl/core";
+import type { GeoTIFF, Overview, DecoderPool } from "@developmentseed/geotiff";
+import { defaultDecoderPool } from "@developmentseed/geotiff";
 
 export function imageForZ(
   geotiff: GeoTIFF,
@@ -17,6 +19,46 @@ export function hasTile(
   const { tileCount } = image;
 
   return x >= 0 && y >= 0 && x < tileCount.x && y < tileCount.y;
+}
+
+/**
+ * Shared tile-decode pipeline used by both the render sublayer and the
+ * background prefetcher.  Consolidates overview selection, bounds
+ * checking, the user-decode call, and missing-tile error handling so
+ * the two callers cannot drift.
+ */
+export async function decodeGeoTIFFTile<T>(
+  geotiff: GeoTIFF,
+  x: number,
+  y: number,
+  z: number,
+  decodeFn: (
+    image: GeoTIFF | Overview,
+    options: { device: Device; x: number; y: number; signal?: AbortSignal; pool: DecoderPool },
+  ) => Promise<T>,
+  options: { device: Device; signal?: AbortSignal; pool?: DecoderPool | null },
+): Promise<T | null> {
+  const image = imageForZ(geotiff, z);
+
+  if (!image || !hasTile(image, x, y)) {
+    return null;
+  }
+
+  try {
+    return await decodeFn(image, {
+      device: options.device,
+      x,
+      y,
+      signal: options.signal,
+      pool: options.pool ?? defaultDecoderPool(),
+    });
+  } catch (error) {
+    if (isMissingTileError(error)) {
+      return null;
+    }
+
+    throw error;
+  }
 }
 
 /**

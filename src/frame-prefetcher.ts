@@ -4,9 +4,8 @@ import type {
   Overview,
   DecoderPool,
 } from "@developmentseed/geotiff";
-import { defaultDecoderPool } from "@developmentseed/geotiff";
 import type { SequenceTileCache } from "./sequence-tile-cache.js";
-import { hasTile, imageForZ, isMissingTileError } from "./util/tile-utils.js";
+import { isMissingTileError, decodeGeoTIFFTile } from "./util/tile-utils.js";
 import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWeights } from "./types.js";
 import { TaskQueue, taskKey, type TileCoord, type TileTask } from "./task-queue.js";
 import {
@@ -377,30 +376,31 @@ export class FramePrefetcher {
         );
       }
 
-      const image = imageForZ(geotiff, task.z);
-
-      if (!image || !hasTile(image, task.x, task.y)) {
-        return;
-      }
-
       if (!this.getUserTileDataFn || !this.device) {
         return;
       }
 
-      const result = await this.getUserTileDataFn(image, {
-        device: this.device,
-        x: task.x,
-        y: task.y,
-        signal: (
+      const signal =
         this.layerSignal && controller.signal
           ? AbortSignal.any([this.layerSignal, controller.signal])
-          : (this.layerSignal ?? controller.signal)),
-        pool: this.pool ?? defaultDecoderPool(),
-      });
+          : (this.layerSignal ?? controller.signal);
+
+      const result = await decodeGeoTIFFTile(
+        geotiff,
+        task.x,
+        task.y,
+        task.z,
+        this.getUserTileDataFn,
+        { device: this.device, signal, pool: this.pool },
+      );
+
+      if (!result) {
+        return;
+      }
 
       const elapsed = performance.now() - t0;
 
-      if (result && result.texture) {
+      if (result.texture) {
         this.tileCache.put(task.frameId, task.x, task.y, task.z, {
           x: task.x,
           y: task.y,
