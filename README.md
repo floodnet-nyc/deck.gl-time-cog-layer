@@ -1,9 +1,9 @@
-# time-cog-layer
+# deck.gl - Time-COGs: Smooth playback of time-indexed Cloud-Optimized GeoTIFF (COG) sequences
 
-A [deck.gl](https://deck.gl) `CompositeLayer` for flicker-free playback of time-indexed Cloud-Optimized GeoTIFF (COG) sequences. Designed for weather radar, satellite imagery, and other regularly-sampled raster time series.
+A [deck.gl](https://deck.gl) `CompositeLayer` for smooth playback of time-indexed Cloud-Optimized GeoTIFF (COG) sequences. Designed for weather radar, satellite imagery, and other regularly-sampled raster time series.
 
 ```bash
-npm install time-cog-layer
+npm install deck.gl-time-cog-layer
 ```
 
 **Peer dependencies:** `@deck.gl/core` ≥9.3, `@deck.gl/geo-layers` ≥9.3, `@deck.gl/layers` ≥9.3, `@deck.gl/mesh-layers` ≥9.3, `@luma.gl/core` ≥9.3.2.
@@ -108,7 +108,7 @@ flowchart TB
     GD -- "returns cached texture" --> RSL
 ```
 
-### Flicker-free frame transitions
+### Smooth frame transitions
 
 When `currentTime` changes, the parent computes a new display frame and updates `currentFrameId` on the persistent sublayer. 
 
