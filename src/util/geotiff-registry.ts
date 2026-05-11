@@ -1,7 +1,10 @@
+import type { Device } from "@luma.gl/core";
 import { GeoTIFF } from "@developmentseed/geotiff";
+import type { Overview, DecoderPool } from "@developmentseed/geotiff";
 import { SourceCache, SourceChunk } from "@chunkd/middleware";
 import { SourceView } from "@chunkd/source";
 import { SourceHttp } from "@chunkd/source-http";
+import { decodeGeoTIFFTile } from "./tile-utils.js";
 
 type GeoTIFFOpenOptions = {
   requestInit?: RequestInit;
@@ -48,10 +51,14 @@ export class GeoTIFFRegistry {
     requestInit?: RequestInit,
   ): Promise<GeoTIFF> {
     const existing = this.map.get(frameId);
-    if (existing) return existing;
+
+    if (existing) {
+      return existing;
+    }
 
     if (this.map.size >= this.maxSize) {
       const firstKey = this.map.keys().next().value;
+
       if (firstKey) {
         this.map.delete(firstKey);
       }
@@ -60,6 +67,54 @@ export class GeoTIFFRegistry {
     const geotiff = await openGeoTIFF(url, { requestInit });
     this.map.set(frameId, geotiff);
     return geotiff;
+  }
+
+  /**
+   * Get-or-open the GeoTIFF for `frameId`, select the correct overview
+   * for zoom `z`, bounds-check the tile at `(x, y)`, call the
+   * user-provided decode function, and catch missing-tile errors.
+   *
+   * This is the single entry point used by both the render sublayer
+   * and the background prefetcher — the two callers can no longer
+   * drift.
+   */
+  async decodeTile<T>(
+    frameId: string,
+    url: string,
+    x: number,
+    y: number,
+    z: number,
+    decodeFn: (
+      image: GeoTIFF | Overview,
+      options: { device: Device; x: number; y: number; signal?: AbortSignal; pool: DecoderPool },
+    ) => Promise<T>,
+    options: {
+      device: Device;
+      signal?: AbortSignal;
+      pool?: DecoderPool | null;
+      requestInit?: RequestInit;
+    },
+  ): Promise<T | null> {
+    let geotiff = this.map.get(frameId);
+
+    if (!geotiff) {
+      if (this.map.size >= this.maxSize) {
+        const firstKey = this.map.keys().next().value;
+
+        if (firstKey) {
+          this.map.delete(firstKey);
+        }
+      }
+
+      geotiff = await openGeoTIFF(url, { requestInit: options.requestInit });
+      this.map.set(frameId, geotiff);
+    }
+
+    return decodeGeoTIFFTile(geotiff, x, y, z, decodeFn, {
+      device: options.device,
+      signal: options.signal,
+      pool: options.pool,
+    });
   }
 
   has(frameId: string): boolean {

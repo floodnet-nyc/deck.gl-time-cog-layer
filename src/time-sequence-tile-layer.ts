@@ -15,7 +15,6 @@ import { COGLayer } from "@developmentseed/deck.gl-geotiff";
 import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 import type { SequenceTileCache } from "./sequence-tile-cache.js";
-import { decodeGeoTIFFTile } from "./util/tile-utils.js";
 
 type TileCoord = { x: number; y: number; z: number };
 
@@ -253,18 +252,10 @@ export class TimeSequenceTileLayer<
       tileCache.recordMiss();
 
       const registry = this.props.geotiffRegistry ?? this._localRegistry!;
-      let geotiff = registry.get(currentFrameId);
 
-      if (!geotiff) {
-        geotiff = await registry.open(
-          currentFrameId,
-          currentFrameUrl,
-          currentFrameRequestInit,
-        );
-      }
-
-      const result = await decodeGeoTIFFTile(
-        geotiff,
+      const result = await registry.decodeTile(
+        currentFrameId,
+        currentFrameUrl,
         x,
         y,
         z,
@@ -276,6 +267,7 @@ export class TimeSequenceTileLayer<
           device: options.device,
           signal: options.signal,
           pool: this.props.pool,
+          requestInit: currentFrameRequestInit,
         },
       );
 

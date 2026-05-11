@@ -5,7 +5,7 @@ import type {
   DecoderPool,
 } from "@developmentseed/geotiff";
 import type { SequenceTileCache } from "./sequence-tile-cache.js";
-import { isMissingTileError, decodeGeoTIFFTile } from "./util/tile-utils.js";
+import { isMissingTileError } from "./util/tile-utils.js";
 import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWeights } from "./types.js";
 import { TaskQueue, taskKey, type TileCoord, type TileTask } from "./task-queue.js";
 import {
@@ -366,15 +366,6 @@ export class FramePrefetcher {
 
     try {
       const registry = this.sharedRegistry ?? this.internalRegistry;
-      let geotiff = registry.get(task.frameId);
-
-      if (!geotiff) {
-        geotiff = await registry.open(
-          task.frameId,
-          task.frameUrl,
-          task.requestInit,
-        );
-      }
 
       if (!this.getUserTileDataFn || !this.device) {
         return;
@@ -385,13 +376,19 @@ export class FramePrefetcher {
           ? AbortSignal.any([this.layerSignal, controller.signal])
           : (this.layerSignal ?? controller.signal);
 
-      const result = await decodeGeoTIFFTile(
-        geotiff,
+      const result = await registry.decodeTile(
+        task.frameId,
+        task.frameUrl,
         task.x,
         task.y,
         task.z,
         this.getUserTileDataFn,
-        { device: this.device, signal, pool: this.pool },
+        {
+          device: this.device,
+          signal,
+          pool: this.pool,
+          requestInit: task.requestInit,
+        },
       );
 
       if (!result) {
