@@ -473,8 +473,13 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       );
     }
 
-    const targetIndex = resolution.targetFrame
-      ? findNearestFrameIndex(catalog, resolution.targetFrame.timeMs)
+    const prefetchAnchorFrame =
+      playing && (this.props.maxFrameRate ?? 0) > 0 && resolution.displayFrame
+        ? resolution.displayFrame
+        : resolution.targetFrame;
+
+    const targetIndex = prefetchAnchorFrame
+      ? findNearestFrameIndex(catalog, prefetchAnchorFrame.timeMs)
       : -1;
 
     const scheduledFrames = scheduleFrameWindow(
@@ -565,7 +570,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     }
 
     this.updatePrefetch({
-      targetFrame: resolution.targetFrame,
+      targetFrame: prefetchAnchorFrame,
       displayFrame: resolution.displayFrame,
       scheduledFrames,
     });
@@ -676,6 +681,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       allFrameIds: [],
       playheadIndex: 0,
       zoomLevels: [],
+      visibleTiles: [],
       tileGrid: {},
       tileStates: {},
       prefetchedUnusedResidentCount: 0,
@@ -699,6 +705,16 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
     const tileGrid: Record<number, { cols: number; rows: number }> = {};
     const tileStates: TileDiagSnapshot["tileStates"] = {};
+    const visibleTiles = state.visibleTileRef?.tiles ?? [];
+
+    for (const v of visibleTiles) {
+      if (!tileGrid[v.z]) {
+        tileGrid[v.z] = { cols: v.x + 1, rows: v.y + 1 };
+      } else {
+        tileGrid[v.z]!.cols = Math.max(tileGrid[v.z]!.cols, v.x + 1);
+        tileGrid[v.z]!.rows = Math.max(tileGrid[v.z]!.rows, v.y + 1);
+      }
+    }
 
     for (const [, tile] of state.tileCache.entries()) {
       tileStates[`${tile.frameId}:${tile.x}:${tile.y}:${tile.z}`] = {
@@ -709,18 +725,9 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
 
       if (!tileGrid[tile.z]) {
         tileGrid[tile.z] = { cols: tile.x + 1, rows: tile.y + 1 };
-      } else {
+      } else if (visibleTiles.length === 0) {
         tileGrid[tile.z]!.cols = Math.max(tileGrid[tile.z]!.cols, tile.x + 1);
         tileGrid[tile.z]!.rows = Math.max(tileGrid[tile.z]!.rows, tile.y + 1);
-      }
-    }
-
-    for (const v of state.visibleTileRef?.tiles ?? []) {
-      if (!tileGrid[v.z]) {
-        tileGrid[v.z] = { cols: v.x + 1, rows: v.y + 1 };
-      } else {
-        tileGrid[v.z]!.cols = Math.max(tileGrid[v.z]!.cols, v.x + 1);
-        tileGrid[v.z]!.rows = Math.max(tileGrid[v.z]!.rows, v.y + 1);
       }
     }
 
@@ -748,6 +755,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       allFrameIds,
       playheadIndex,
       zoomLevels,
+      visibleTiles,
       tileGrid,
       tileStates,
       prefetchedUnusedResidentCount: tileStats.prefetchedUnusedResidentCount,

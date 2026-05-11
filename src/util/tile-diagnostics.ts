@@ -17,6 +17,7 @@ export type TileDiagSnapshot = {
   allFrameIds: string[];
   playheadIndex: number;
   zoomLevels: number[];
+  visibleTiles: { x: number; y: number; z: number }[];
   tileGrid: Record<number, { cols: number; rows: number }>;
   tileStates: Record<string, TileDiagCellState>;
   prefetchedUnusedResidentCount: number;
@@ -50,18 +51,22 @@ const COLORS = {
 
 const MIN_COL_WIDTH = 6;
 const MIN_BAND_HEIGHT = 28;
-const BAND_GAP = 10;
+const BAND_GAP = 16;
 const FOOTER_LINES = 3;
 const FOOTER_LINE_HEIGHT = 12;
 const DETAIL_HEIGHT = 42;
 const DETAIL_GAP = 8;
-const DETAIL_MIN_COL_WIDTH = 8;
+const DETAIL_MIN_COL_WIDTH = 14;
+const OVERVIEW_CELL_GAP = 1;
+const OVERVIEW_BAND_PADDING = 6;
 
 type DiagnosticCanvasState = HTMLCanvasElement & {
   __timeCogHoverRatio?: number;
   __timeCogBound?: boolean;
   __timeCogLastSnapshot?: TileDiagSnapshot;
   __timeCogHoverActive?: boolean;
+  __timeCogPointerX?: number;
+  __timeCogPointerY?: number;
 };
 
 function tileKey(frameId: string, x: number, y: number, z: number): string {
@@ -122,6 +127,14 @@ function buildTimeBins(frameIds: string[], maxBins: number): TimeBin[] {
   }
 
   return bins.filter((bin) => bin.frameIds.length > 0);
+}
+
+function formatBinLabel(bin: TimeBin): string {
+  if (bin.end <= bin.start + 1) {
+    return String(bin.start);
+  }
+
+  return `${bin.start}-${bin.end - 1}`;
 }
 
 function priorityForState(state: TileDiagCellState): number {
@@ -221,22 +234,109 @@ function summarizePlayhead(frameId: string | undefined, playheadIndex: number): 
   return `#${playheadIndex} ${shortened}`;
 }
 
+type FocusedTile = {
+  frameIndex: number;
+  frameId: string;
+  z: number;
+  x: number;
+  y: number;
+  cached?: TileDiagCellState;
+  inFlight: boolean;
+  scheduled: boolean;
+};
+
 function computeBandHeights(
   zoomLevels: number[],
-  tileGrid: Record<number, { cols: number; rows: number }>,
   gridHeight: number,
   dpr: number,
 ): number[] {
-  const desired = zoomLevels.map((z) => {
-    const rows = Math.max(1, tileGrid[z]?.rows ?? 1);
-    return Math.max(MIN_BAND_HEIGHT * dpr, rows * 8 * dpr + 8 * dpr);
-  });
+  const desired = zoomLevels.map(() => MIN_BAND_HEIGHT * dpr);
 
   const gapTotal = Math.max(0, zoomLevels.length - 1) * BAND_GAP * dpr;
   const desiredTotal = desired.reduce((sum, value) => sum + value, 0) + gapTotal;
   const scale = desiredTotal > gridHeight ? gridHeight / desiredTotal : 1;
 
   return desired.map((value) => value * scale);
+}
+
+function tileSlotsForZoom(
+  z: number,
+  visibleTiles: { x: number; y: number; z: number }[],
+  tileGrid: Record<number, { cols: number; rows: number }>,
+): Array<{ x: number; y: number }> {
+  const visible = visibleTiles
+    .filter((tile) => tile.z === z)
+    .sort((a, b) => a.y - b.y || a.x - b.x)
+    .map(({ x, y }) => ({ x, y }));
+
+  if (visible.length > 0) {
+    return visible;
+  }
+
+  const grid = tileGrid[z] ?? { cols: 1, rows: 1 };
+  const slots: Array<{ x: number; y: number }> = [];
+
+  for (let y = 0; y < Math.max(1, grid.rows); y += 1) {
+    for (let x = 0; x < Math.max(1, grid.cols); x += 1) {
+      slots.push({ x, y });
+    }
+  }
+
+  return slots;
+}
+
+function cellStateForFrame(
+  frameId: string,
+  z: number,
+  tx: number,
+  ty: number,
+  state: TileDiagSnapshot,
+): AggregatedCellState {
+  const cached = state.tileStates[tileKey(frameId, tx, ty, z)];
+
+  if (cached) {
+    return { kind: "cached", state: cached };
+  }
+
+  if (state.inFlightKeys.has(tileKey(frameId, tx, ty, z))) {
+    return { kind: "loading" };
+  }
+
+  if (state.scheduledFrameIds.has(frameId)) {
+    return { kind: "scheduled-empty" };
+  }
+
+  return { kind: "unscheduled" };
+}
+
+function renderStackedCell(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  colors: string[],
+  dpr: number,
+): void {
+  if (colors.length === 0) {
+    return;
+  }
+
+  const segmentHeight = height / colors.length;
+
+  for (let index = 0; index < colors.length; index += 1) {
+    const color = colors[index];
+
+    if (!color) {
+      continue;
+    }
+
+    const segmentY = y + index * segmentHeight;
+    const segmentH = Math.max(0.6 * dpr, segmentHeight - OVERVIEW_CELL_GAP * dpr);
+
+    ctx.fillStyle = color;
+    ctx.fillRect(x, segmentY, width, segmentH);
+  }
 }
 
 /**
@@ -246,8 +346,8 @@ function computeBandHeights(
  * - X = time across the full catalog slice.
  * - Y = zoom level bands.
  *
- * Within each `(time, zoom)` cell, x/y tile coordinates are packed as a
- * mini-grid so the primary axes remain temporal and zoom-oriented.
+ * Within each `(time, zoom)` cell, tile coordinates are packed into a
+ * vertical strip so the primary axes remain temporal and zoom-oriented.
  */
 export function renderTileDiagnostics(
   canvas: HTMLCanvasElement,
@@ -283,7 +383,7 @@ export function renderTileDiagnostics(
   const maxBins = Math.max(1, Math.floor(gridW / (MIN_COL_WIDTH * dpr)));
   const bins = buildTimeBins(state.frameIds, maxBins);
   const colW = gridW / bins.length;
-  const bandHeights = computeBandHeights(state.zoomLevels, state.tileGrid, gridH, dpr);
+  const bandHeights = computeBandHeights(state.zoomLevels, gridH, dpr);
   const bandGap = BAND_GAP * dpr;
   const playheadBinIndex = bins.findIndex(
     (bin) => state.playheadIndex >= bin.start && state.playheadIndex < bin.end,
@@ -295,21 +395,11 @@ export function renderTileDiagnostics(
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
 
-  const labelInterval = Math.max(1, Math.floor(bins.length / 12));
-
-  for (let col = 0; col < bins.length; col += 1) {
-    if (col % labelInterval !== 0 && col !== playheadBinIndex && col !== bins.length - 1) {
-      continue;
-    }
-
-    const displayIdx = bins[col]?.start ?? 0;
-    const x = marginLeft + col * colW + colW / 2;
-    ctx.fillStyle = COLORS.frameLabel;
-    ctx.fillText(String(displayIdx), x, 4 * dpr);
-  }
+  const labelInterval = Math.max(1, Math.floor(bins.length / 10));
 
   renderDetailTimeline(
     ctx,
+    interactiveCanvas,
     state,
     interactiveCanvas.__timeCogHoverActive
       ? (interactiveCanvas.__timeCogHoverRatio ?? 1)
@@ -321,17 +411,37 @@ export function renderTileDiagnostics(
     dpr,
   );
 
+  for (let col = 0; col < bins.length; col += 1) {
+    if (col % labelInterval !== 0 && col !== playheadBinIndex && col !== bins.length - 1) {
+      continue;
+    }
+
+    const bin = bins[col];
+
+    if (!bin) {
+      continue;
+    }
+
+    const x = marginLeft + col * colW + colW / 2;
+    ctx.fillStyle = COLORS.frameLabel;
+    ctx.fillText(formatBinLabel(bin), x, marginTop - 14 * dpr);
+  }
+
   let bandTop = marginTop;
+
+  ctx.font = `${8 * dpr}px monospace`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "bottom";
+  ctx.fillStyle = COLORS.frameLabel;
+  ctx.fillText(`overview (time bins)`, marginLeft, marginTop - 2 * dpr);
 
   for (let bandIndex = state.zoomLevels.length - 1; bandIndex >= 0; bandIndex -= 1) {
     const z = state.zoomLevels[bandIndex] ?? 0;
     const bandHeight = bandHeights[bandIndex] ?? MIN_BAND_HEIGHT * dpr;
     const bandBottom = bandTop + bandHeight;
-    const grid = state.tileGrid[z] ?? { cols: 1, rows: 1 };
-    const cols = Math.max(1, grid.cols);
-    const rows = Math.max(1, grid.rows);
-    const innerTop = bandTop + 4 * dpr;
-    const innerBottom = bandBottom - 4 * dpr;
+    const slots = tileSlotsForZoom(z, state.visibleTiles, state.tileGrid);
+    const innerTop = bandTop + OVERVIEW_BAND_PADDING * dpr;
+    const innerBottom = bandBottom - OVERVIEW_BAND_PADDING * dpr;
     const innerHeight = Math.max(1, innerBottom - innerTop);
 
     ctx.fillStyle = COLORS.bandFill;
@@ -361,24 +471,17 @@ export function renderTileDiagnostics(
       ctx.lineTo(frameX, bandBottom);
       ctx.stroke();
 
-      const tileW = colW / cols;
-      const tileH = innerHeight / rows;
-
-      for (let ty = 0; ty < rows; ty += 1) {
-        for (let tx = 0; tx < cols; tx += 1) {
-          const color = colorForAggregatedState(
-            aggregateCellState(bin, z, tx, ty, state),
-          );
-
-          const x = frameX + tx * tileW + 0.5 * dpr;
-          const y = innerTop + ty * tileH + 0.5 * dpr;
-          const width = Math.max(0.6 * dpr, tileW - 1 * dpr);
-          const height = Math.max(0.6 * dpr, tileH - 1 * dpr);
-
-          ctx.fillStyle = color;
-          ctx.fillRect(x, y, width, height);
-        }
-      }
+      renderStackedCell(
+        ctx,
+        frameX + 0.5 * dpr,
+        innerTop + 0.5 * dpr,
+        Math.max(0.6 * dpr, colW - 1 * dpr),
+        Math.max(0.6 * dpr, innerHeight - 1 * dpr),
+        slots.map((slot) => colorForAggregatedState(
+          aggregateCellState(bin, z, slot.x, slot.y, state),
+        )),
+        dpr,
+      );
     }
 
     bandTop = bandBottom + bandGap;
@@ -421,6 +524,8 @@ function ensureCanvasInteractivity(
     const width = Math.max(1, usableRight - usableLeft);
     canvas.__timeCogHoverRatio = (x - usableLeft) / width;
     canvas.__timeCogHoverActive = true;
+    canvas.__timeCogPointerX = event.clientX - rect.left;
+    canvas.__timeCogPointerY = event.clientY - rect.top;
     if (canvas.__timeCogLastSnapshot) {
       renderTileDiagnostics(canvas, canvas.__timeCogLastSnapshot);
     }
@@ -447,6 +552,7 @@ function playheadRatio(state: TileDiagSnapshot): number {
 
 function renderDetailTimeline(
   ctx: CanvasRenderingContext2D,
+  canvas: DiagnosticCanvasState,
   state: TileDiagSnapshot,
   hoverRatio: number,
   marginLeft: number,
@@ -467,6 +573,17 @@ function renderDetailTimeline(
   const zoomLevels = state.zoomLevels.length > 0 ? state.zoomLevels : [0];
   const colW = width / Math.max(1, frameIds.length);
   const rowH = height / Math.max(1, zoomLevels.length);
+  const focusedTile = resolveFocusedTile(
+    canvas,
+    state,
+    frameIds,
+    start,
+    zoomLevels,
+    marginLeft / dpr,
+    top / dpr,
+    width / dpr,
+    height / dpr,
+  );
 
   ctx.fillStyle = COLORS.bandFill;
   ctx.fillRect(marginLeft, top, width, height);
@@ -478,41 +595,37 @@ function renderDetailTimeline(
   ctx.textAlign = "left";
   ctx.textBaseline = "bottom";
   ctx.fillStyle = COLORS.frameLabel;
-  ctx.fillText(`detail`, marginLeft, top - 2 * dpr);
+  ctx.fillText(`detail (raw frames)`, marginLeft, top - 2 * dpr);
+  if (focusedTile) {
+    ctx.textAlign = "right";
+    ctx.fillText(
+      describeFocusedTile(focusedTile),
+      marginLeft + width,
+      top - 2 * dpr,
+    );
+  }
 
   for (let rowIndex = zoomLevels.length - 1; rowIndex >= 0; rowIndex -= 1) {
     const z = zoomLevels[rowIndex] ?? 0;
     const rowTop = top + (zoomLevels.length - 1 - rowIndex) * rowH;
-    const grid = state.tileGrid[z] ?? { cols: 1, rows: 1 };
-    const tileW = colW / Math.max(1, grid.cols);
-    const tileH = rowH / Math.max(1, grid.rows);
+    const slots = tileSlotsForZoom(z, state.visibleTiles, state.tileGrid);
+    const cellTop = rowTop + 0.5 * dpr;
+    const cellHeight = Math.max(0.6 * dpr, rowH - 1 * dpr);
 
     for (let frameIdx = 0; frameIdx < frameIds.length; frameIdx += 1) {
       const frameId = frameIds[frameIdx] ?? "";
       const frameX = marginLeft + frameIdx * colW;
-
-      for (let ty = 0; ty < Math.max(1, grid.rows); ty += 1) {
-        for (let tx = 0; tx < Math.max(1, grid.cols); tx += 1) {
-          const key = tileKey(frameId, tx, ty, z);
-          const cached = state.tileStates[key];
-
-          let color = cached
-            ? colorForTile(cached)
-            : state.inFlightKeys.has(key)
-              ? COLORS.loading
-              : state.scheduledFrameIds.has(frameId)
-                ? COLORS.scheduledEmpty
-                : COLORS.unscheduled;
-
-          const x = frameX + tx * tileW + 0.5 * dpr;
-          const y = rowTop + ty * tileH + 0.5 * dpr;
-          const w = Math.max(0.6 * dpr, tileW - 1 * dpr);
-          const h = Math.max(0.6 * dpr, tileH - 1 * dpr);
-
-          ctx.fillStyle = color;
-          ctx.fillRect(x, y, w, h);
-        }
-      }
+      renderStackedCell(
+        ctx,
+        frameX + 0.5 * dpr,
+        cellTop,
+        Math.max(0.6 * dpr, colW - 1 * dpr),
+        cellHeight,
+        slots.map((slot) => colorForAggregatedState(
+          cellStateForFrame(frameId, z, slot.x, slot.y, state),
+        )),
+        dpr,
+      );
     }
   }
 
@@ -535,8 +648,104 @@ function renderDetailTimeline(
 
     const x = marginLeft + frameIdx * colW + colW / 2;
     ctx.fillStyle = COLORS.frameLabel;
-    ctx.fillText(String(start + frameIdx), x, top + height + 2 * dpr);
+    ctx.fillText(String(start + frameIdx), x, 4 * dpr);
   }
+}
+
+function resolveFocusedTile(
+  canvas: DiagnosticCanvasState,
+  state: TileDiagSnapshot,
+  frameIds: string[],
+  start: number,
+  zoomLevels: number[],
+  leftPx: number,
+  topPx: number,
+  widthPx: number,
+  heightPx: number,
+): FocusedTile | null {
+  if (frameIds.length === 0 || zoomLevels.length === 0) {
+    return null;
+  }
+
+  if (
+    canvas.__timeCogHoverActive &&
+    typeof canvas.__timeCogPointerX === "number" &&
+    typeof canvas.__timeCogPointerY === "number"
+  ) {
+    const xPx = canvas.__timeCogPointerX;
+    const yPx = canvas.__timeCogPointerY;
+
+    if (xPx >= leftPx && xPx <= leftPx + widthPx && yPx >= topPx && yPx <= topPx + heightPx) {
+      const frameLocal = Math.min(
+        frameIds.length - 1,
+        Math.max(0, Math.floor(((xPx - leftPx) / Math.max(1, widthPx)) * frameIds.length)),
+      );
+      const zoomLocal = Math.min(
+        zoomLevels.length - 1,
+        Math.max(0, Math.floor(((yPx - topPx) / Math.max(1, heightPx)) * zoomLevels.length)),
+      );
+      const z = zoomLevels[zoomLevels.length - 1 - zoomLocal] ?? zoomLevels[0] ?? 0;
+      const rowHeight = heightPx / zoomLevels.length;
+      const slots = tileSlotsForZoom(z, state.visibleTiles, state.tileGrid);
+      const slotLocal = Math.min(
+        Math.max(1, slots.length) - 1,
+        Math.max(
+          0,
+          Math.floor((((yPx - topPx) % Math.max(1, rowHeight)) / Math.max(1, rowHeight)) * Math.max(1, slots.length)),
+        ),
+      );
+      const slot = slots[slotLocal] ?? { x: 0, y: 0 };
+      const frameId = frameIds[frameLocal] ?? "";
+      const key = tileKey(frameId, slot.x, slot.y, z);
+
+      return {
+        frameIndex: start + frameLocal,
+        frameId,
+        z,
+        x: slot.x,
+        y: slot.y,
+        cached: state.tileStates[key],
+        inFlight: state.inFlightKeys.has(key),
+        scheduled: state.scheduledFrameIds.has(frameId),
+      };
+    }
+  }
+
+  const frameIndex = Math.min(frameIds.length - 1, Math.max(0, state.playheadIndex - start));
+  const frameId = frameIds[frameIndex] ?? "";
+  const visible = [...state.visibleTiles]
+    .sort((a, b) => b.z - a.z)[0];
+  const z = visible?.z ?? zoomLevels.at(-1) ?? 0;
+  const slots = tileSlotsForZoom(z, state.visibleTiles, state.tileGrid);
+  const fallbackSlot = slots[Math.floor((Math.max(1, slots.length) - 1) / 2)] ?? { x: 0, y: 0 };
+  const x = visible?.x ?? fallbackSlot.x;
+  const y = visible?.y ?? fallbackSlot.y;
+  const key = tileKey(frameId, x, y, z);
+
+  return {
+    frameIndex: start + frameIndex,
+    frameId,
+    z,
+    x,
+    y,
+    cached: state.tileStates[key],
+    inFlight: state.inFlightKeys.has(key),
+    scheduled: state.scheduledFrameIds.has(frameId),
+  };
+}
+
+function describeFocusedTile(tile: FocusedTile): string {
+  const state = tile.cached
+    ? tile.cached.origin === "prefetch" && !tile.cached.wasDisplayed
+      ? `${tile.cached.quality} prefetch`
+      : `${tile.cached.quality} shown`
+    : tile.inFlight
+      ? "loading"
+      : tile.scheduled
+        ? "scheduled empty"
+        : "unscheduled";
+
+  return `focus f${tile.frameIndex} z${tile.z} (${tile.x},${tile.y}) ${state}`;
 }
 
 function renderLegend(

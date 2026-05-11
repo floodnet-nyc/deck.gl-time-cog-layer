@@ -14,6 +14,7 @@ import {
   normalizeFrameCatalog,
   resolveFrameForTime,
   scheduleFrameWindow,
+  applyMaxFrameRateBucking,
 } from "../dist/index.js";
 import { TimeSequenceTileLayer } from "../dist/time-sequence-tile-layer.js";
 
@@ -83,6 +84,47 @@ test("schedules a playback-aware frame window", () => {
       (entry) => entry.index,
     ),
     [2, 1, 3, 0],
+  );
+});
+
+test("frame-rate-aware scheduling samples one frame per display bucket", () => {
+  const catalog = normalizeFrameCatalog(
+    Array.from({ length: 18 }, (_, index) => ({
+      time: index * 120_000,
+      url: `/${index}.tif`,
+    })),
+  );
+
+  const bucketedDisplayFrame = applyMaxFrameRateBucking(
+    catalog[10],
+    catalog,
+    catalog[6].id,
+    5,
+    7200,
+  );
+
+  assert.equal(bucketedDisplayFrame.id, catalog[6].id);
+  assert.deepEqual(
+    scheduleFrameWindow(catalog, 6, { backwardFrames: 1, forwardFrames: 3 }, 7200, 5, true).map(
+      (entry) => entry.index,
+    ),
+    [6, 12, 0],
+  );
+});
+
+test("frame-rate-aware backward context uses the displayed bucket representative", () => {
+  const catalog = normalizeFrameCatalog(
+    Array.from({ length: 24 }, (_, index) => ({
+      time: index * 120_000,
+      url: `/${index}.tif`,
+    })),
+  );
+
+  assert.deepEqual(
+    scheduleFrameWindow(catalog, 12, { backwardFrames: 1, forwardFrames: 1 }, 7200, 5, true).map(
+      (entry) => entry.index,
+    ),
+    [12, 18, 6],
   );
 });
 

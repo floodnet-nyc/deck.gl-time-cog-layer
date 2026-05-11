@@ -45,18 +45,45 @@ export function scheduleFrameWindow(
   const direction = playing ? Math.sign(playbackRate) || 1 : 0;
   const before = direction < 0 ? forwardFrames : backwardFrames;
   const after = direction < 0 ? backwardFrames : forwardFrames;
+  const representative = direction < 0 ? "last" : "first";
   const bucketIntervalMs = maxFrameRate > 0 && playing
     ? (1000 / maxFrameRate) * Math.abs(playbackRate)
     : 0;
+  const anchorIndex = representativeIndexForBucket(
+    catalog,
+    targetIndex,
+    bucketIntervalMs,
+    representative,
+  );
+  const targetBucket = bucketForIndex(catalog, anchorIndex, bucketIntervalMs);
 
-  const backward = collectFrames(catalog, targetIndex, before + 1, -1, bucketIntervalMs);
-  const forward = collectFrames(catalog, targetIndex + 1, after, 1, bucketIntervalMs);
+  const backward = [
+    anchorIndex,
+    ...collectFrames(
+      catalog,
+      anchorIndex - 1,
+      before,
+      -1,
+      bucketIntervalMs,
+      representative,
+      targetBucket,
+    ),
+  ];
+  const forward = collectFrames(
+    catalog,
+    anchorIndex + 1,
+    after,
+    1,
+    bucketIntervalMs,
+    representative,
+    targetBucket,
+  );
 
   return [...backward.reverse(), ...forward]
     .map((index) => ({
       frame: catalog[index],
       index,
-      priority: scoreFrame(index, targetIndex, direction),
+      priority: scoreFrame(index, anchorIndex, direction),
     }))
     .sort((a, b) => b.priority - a.priority);
 }
@@ -67,29 +94,78 @@ function collectFrames(
   count: number,
   step: -1 | 1,
   bucketIntervalMs: number,
+  representative: "first" | "last",
+  lastBucket: number | undefined,
 ): number[] {
   const indices: number[] = [];
-  const originTimeMs = catalog[0]?.timeMs ?? 0;
 
-  let lastBucket: number | undefined;
+  for (let index = targetIndex; index >= 0 && index < catalog.length && indices.length < count;) {
+    const bucket = bucketForIndex(catalog, index, bucketIntervalMs);
+    if (lastBucket === bucket) {
+      index += step;
+      continue;
+    }
 
-  for (
-    let index = targetIndex;
-    index >= 0 && index < catalog.length && indices.length < count;
-    index += step
-  ) {
-    const frame = catalog[index];
-    if (!frame) continue;
-    const bucket = (
-      bucketIntervalMs ? 
-      Math.floor((frame.timeMs - originTimeMs) / bucketIntervalMs)
-      : frame.sourceIndex);
-    if (lastBucket === bucket) continue;
-    indices.push(index);
+    const { start, end } = bucketBoundsForIndex(catalog, index, bucketIntervalMs);
+    indices.push(representative === "first" ? start : end);
     lastBucket = bucket;
+    index = step > 0 ? end + 1 : start - 1;
   }
 
   return indices;
+}
+
+function bucketBoundsForIndex(
+  catalog: readonly NormalizedTimeCOGFrame[],
+  index: number,
+  bucketIntervalMs: number,
+): { start: number; end: number } {
+  const bucket = bucketForIndex(catalog, index, bucketIntervalMs);
+  let start = index;
+  let end = index;
+
+  while (start - 1 >= 0 && bucketForIndex(catalog, start - 1, bucketIntervalMs) === bucket) {
+    start -= 1;
+  }
+
+  while (end + 1 < catalog.length && bucketForIndex(catalog, end + 1, bucketIntervalMs) === bucket) {
+    end += 1;
+  }
+
+  return { start, end };
+}
+
+function representativeIndexForBucket(
+  catalog: readonly NormalizedTimeCOGFrame[],
+  index: number,
+  bucketIntervalMs: number,
+  representative: "first" | "last",
+): number {
+  if (!bucketIntervalMs) {
+    return index;
+  }
+
+  const { start, end } = bucketBoundsForIndex(catalog, index, bucketIntervalMs);
+  return representative === "first" ? start : end;
+}
+
+function bucketForIndex(
+  catalog: readonly NormalizedTimeCOGFrame[],
+  index: number,
+  bucketIntervalMs: number,
+): number {
+  const frame = catalog[index];
+
+  if (!frame) {
+    return Number.NaN;
+  }
+
+  if (!bucketIntervalMs) {
+    return frame.sourceIndex;
+  }
+
+  const originTimeMs = catalog[0]?.timeMs ?? 0;
+  return Math.floor((frame.timeMs - originTimeMs) / bucketIntervalMs);
 }
 
 function scoreFrame(index: number, targetIndex: number, direction: number): number {
