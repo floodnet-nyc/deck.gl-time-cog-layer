@@ -20,7 +20,7 @@ import { TimeSequenceTileLayer } from "./time-sequence-tile-layer.js";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 import { detectInteractionMode } from "./util/interaction-mode.js";
 import { computeCoverage, computeBufferState } from "./util/frame-coverage.js";
-import { buildBufferState, buildStats } from "./util/stats-collector.js";
+import { buildBufferState, buildStats } from "./util/stats-collector.ts";
 import { mergeCogLayerProps } from "./util/cog-prop-keys.js";
 import type {
   COGLayerPassThroughProps,
@@ -39,7 +39,7 @@ import type {
   TimeCOGStats,
   TimeValue,
 } from "./types.js";
-import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
+import type { TileDiagSnapshot } from "./util/tile-diagnostics.ts";
 import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
 
 /**
