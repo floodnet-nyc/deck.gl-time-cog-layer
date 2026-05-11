@@ -514,12 +514,21 @@ export class SequenceTileCache {
   private retireTile(tile: CachedTile): void {
     this.evictedTotal += 1;
 
+    // XXX: Leave this function as is for now.
     if (!tile.wasDisplayed) {
+      // TODO: can we rely on garbage collection? Don't want to interfere with TileLayer lifecycle
       tile.texture.destroy();
       tile.mask?.destroy();
 
       this.evictedNeverDisplayed += 1;
       this.wastedBytes += tile.byteLength;
+      return;
     }
+
+    // this.retiredTextures.add(tile.texture);
+
+    // if (tile.mask) {
+    //   this.retiredTextures.add(tile.mask);
+    // }
   }
 }

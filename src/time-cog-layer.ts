@@ -20,7 +20,7 @@ import { TimeSequenceTileLayer } from "./time-sequence-tile-layer.js";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 import { detectInteractionMode } from "./util/interaction-mode.js";
 import { computeCoverage, computeBufferState } from "./util/frame-coverage.js";
-import { buildBufferState, buildStats } from "./util/stats-collector.ts";
+import { buildBufferState, buildStats } from "./util/stats-collector.js";
 import { mergeCogLayerProps } from "./util/cog-prop-keys.js";
 import type {
   COGLayerPassThroughProps,
@@ -39,7 +39,7 @@ import type {
   TimeCOGStats,
   TimeValue,
 } from "./types.js";
-import type { TileDiagSnapshot } from "./util/tile-diagnostics.ts";
+import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
 import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
 
 /**
@@ -331,12 +331,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     const initialUrl = state.initialGeotiffUrl || frame.url;
     const passThrough = mergeCogLayerProps(this.props, frame);
     const qualityPolicy = this.props.qualityPolicy ?? {};
-    const bias =
-      state.interactionMode === "scrubbing"
-        ? (qualityPolicy.scrubOverviewBias ?? 2)
-        : state.interactionMode === "seeking"
-          ? (qualityPolicy.previewOverviewBias ?? 1)
-          : 0;
+    
 
     const userGeoTiff = this.props.onGeoTIFFLoad;
     let onGeoTIFFLoad = userGeoTiff;
@@ -367,7 +362,6 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       geotiff: initialUrl,
       getTileData: this._getTileDataCallback(frame),
       renderTile: this.props.renderTile,
-      previewBias: bias,
       updateTriggers: {
         renderSubLayers: this.props.updateTriggers?.renderTile,
         ...this.props.updateTriggers,
@@ -375,11 +369,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       },
       onViewportLoad: (loadedTiles: _Tile2DHeader<Record<string, unknown>>[]) => {
         if (state.visibleTileRef) {
-          state.visibleTileRef.tiles = loadedTiles.map((t) => ({
-            x: t.index.x,
-            y: t.index.y,
-            z: t.index.z,
-          }));
+          state.visibleTileRef.tiles = loadedTiles.map(({ index: { x, y, z } }) => ({ x, y, z }));
         }
 
         this.updatePrefetch();
@@ -408,6 +398,15 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     ) => {
       const { id, url, requestInit } = frame;
       const { x, y, z } = tile.index;
+      
+      // const state = this.state;
+      // const qualityPolicy = this.props.qualityPolicy ?? {};
+      // const bias =
+      //   state.interactionMode === "scrubbing"
+      //     ? (qualityPolicy.scrubOverviewBias ?? 2)
+      //     : state.interactionMode === "seeking"
+      //       ? (qualityPolicy.previewOverviewBias ?? 1)
+      //       : 0;
 
       const hit = tileCache.get(id, x, y, z);
       if (hit) {
