@@ -301,12 +301,14 @@ function render(): void {
       maxFrames: 120,
     },
     onStats: (stats) => {
-      const wastedKb = Math.round(stats.wastedBytes / 1024);
+      const wastedKb = Math.round(stats.prefetchedWastedBytes / 1024);
+      const useRate = Math.round(stats.prefetchedUseRate * 100);
+      const wasteRate = Math.round(stats.prefetchedWasteRate * 100);
       statsOutput && (statsOutput.value =
         `${stats.readyFrameCount}/${stats.frameCount} ready, ` +
         `${stats.scheduledFrameCount} scheduled | ` +
-        `waste: ${wastedKb} kB | ` +
-        `evicted: ${stats.evictedNeverDisplayed} never-shown / ${stats.evictedTotal} total`);
+        `prefetch used: ${useRate}% | ` +
+        `waste: ${stats.prefetchedWastedCount} (${wasteRate}%, ${wastedKb} kB)`);
     },
   });
 

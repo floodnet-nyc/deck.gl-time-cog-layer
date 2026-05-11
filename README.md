@@ -205,7 +205,7 @@ Destroying a cache entry calls `texture.destroy()` on the underlying luma.gl `Te
 
 ## Diagnostic minimap
 
-The package exports a canvas-based diagnostic minimap that visualises tile state across the temporal sequence:
+The package exports a canvas-based diagnostic map that visualises tile state across the temporal sequence:
 
 ```ts
 import { renderTileDiagnostics } from "time-cog-layer";
@@ -215,7 +215,20 @@ const snapshot = timeLayer.getDiagnosticSnapshot();
 renderTileDiagnostics(canvas, snapshot);
 ```
 
-**Axes and colours:**
+The diagnostic renderer treats **time** as the primary x axis and **zoom**
+as the primary y axis. Within each `(time, zoom)` cell, the renderer packs
+the tile `x/y` coordinates into a mini-grid, making frame skipping and
+long-term cache/prefetch behaviour easier to inspect across the full
+sequence.
+
+The footer focuses on prefetch efficiency:
+
+- `prefetch loaded`: cumulative prefetched tiles admitted into cache
+- `used`: prefetched tiles that were later displayed
+- `wasted`: prefetched tiles evicted before display
+- `unused resident`: prefetched tiles still in cache but not yet shown
+
+**Conceptual layout:**
 
 ```
          frame 0     1     2     3     4     5     6     7     8     9

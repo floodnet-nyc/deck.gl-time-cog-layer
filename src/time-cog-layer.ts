@@ -189,8 +189,6 @@ export type TimeCOGLayerState = {
 
 const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
 
-const EMPTY_TILE_CACHE = new SequenceTileCache();
-
 /**
  * A deck.gl `CompositeLayer` that orchestrates time-indexed playback of
  * Cloud-Optimized GeoTIFF (COG) sequences.
@@ -669,18 +667,17 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
    * Returns a snapshot of the current tile state for the diagnostic
    * minimap.
    *
-   * @param windowSize - Number of frame columns to include in the
-   *   window, centered on the playhead (default 60).
+   * @param windowSize - Optional number of frame columns to include in a
+   *   playhead-centered window. Omit to capture the full timeline.
    */
-  getDiagnosticSnapshot(windowSize = 60): TileDiagSnapshot {
+  getDiagnosticSnapshot(windowSize?: number): TileDiagSnapshot {
     const empty: TileDiagSnapshot = {
-      tileCache: EMPTY_TILE_CACHE,
-      visibleTiles: [],
       frameIds: [],
       allFrameIds: [],
       playheadIndex: 0,
-      maxZoom: 0,
+      zoomLevels: [],
       tileGrid: {},
+      tileStates: {},
       prefetchedUnusedResidentCount: 0,
       prefetchedUnusedResidentBytes: 0,
       prefetchedWastedCount: 0,
@@ -693,30 +690,37 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     };
     const state = this.state;
 
-    if (!state || !state.tileCache || !state.visibleTileRef) {
+    if (!state || !state.tileCache) {
       return empty;
     }
 
     const tileStats = state.tileCache.stats();
     const prefetchStats = state.prefetcher.stats();
 
-    const tileGrid: Record<number, { maxX: number; maxY: number }> = {};
+    const tileGrid: Record<number, { cols: number; rows: number }> = {};
+    const tileStates: TileDiagSnapshot["tileStates"] = {};
 
     for (const [, tile] of state.tileCache.entries()) {
+      tileStates[`${tile.frameId}:${tile.x}:${tile.y}:${tile.z}`] = {
+        quality: tile.quality,
+        origin: tile.origin,
+        wasDisplayed: tile.wasDisplayed,
+      };
+
       if (!tileGrid[tile.z]) {
-        tileGrid[tile.z] = { maxX: tile.x, maxY: tile.y };
+        tileGrid[tile.z] = { cols: tile.x + 1, rows: tile.y + 1 };
       } else {
-        tileGrid[tile.z]!.maxX = Math.max(tileGrid[tile.z]!.maxX, tile.x);
-        tileGrid[tile.z]!.maxY = Math.max(tileGrid[tile.z]!.maxY, tile.y);
+        tileGrid[tile.z]!.cols = Math.max(tileGrid[tile.z]!.cols, tile.x + 1);
+        tileGrid[tile.z]!.rows = Math.max(tileGrid[tile.z]!.rows, tile.y + 1);
       }
     }
 
-    for (const v of state.visibleTileRef.tiles) {
+    for (const v of state.visibleTileRef?.tiles ?? []) {
       if (!tileGrid[v.z]) {
-        tileGrid[v.z] = { maxX: v.x, maxY: v.y };
+        tileGrid[v.z] = { cols: v.x + 1, rows: v.y + 1 };
       } else {
-        tileGrid[v.z]!.maxX = Math.max(tileGrid[v.z]!.maxX, v.x);
-        tileGrid[v.z]!.maxY = Math.max(tileGrid[v.z]!.maxY, v.y);
+        tileGrid[v.z]!.cols = Math.max(tileGrid[v.z]!.cols, v.x + 1);
+        tileGrid[v.z]!.rows = Math.max(tileGrid[v.z]!.rows, v.y + 1);
       }
     }
 
@@ -725,22 +729,27 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     const playheadInCatalog = displayId
       ? allFrameIds.indexOf(displayId)
       : 0;
-    const halfWindow = Math.floor(windowSize / 2);
-    const winStart = Math.max(0, playheadInCatalog - halfWindow);
-    const winEnd = Math.min(allFrameIds.length, winStart + windowSize);
+    const hasWindow = typeof windowSize === "number" && windowSize > 0;
+    const halfWindow = hasWindow ? Math.floor(windowSize / 2) : 0;
+    const winStart = hasWindow
+      ? Math.max(0, playheadInCatalog - halfWindow)
+      : 0;
+    const winEnd = hasWindow
+      ? Math.min(allFrameIds.length, winStart + windowSize)
+      : allFrameIds.length;
     const frameIds = allFrameIds.slice(winStart, winEnd);
     const playheadIndex = Math.max(0, playheadInCatalog - winStart);
-
-    const maxZoom = Math.max(0, ...Object.keys(tileGrid).map(Number));
+    const zoomLevels = Object.keys(tileGrid)
+      .map(Number)
+      .sort((a, b) => a - b);
 
     return {
-      tileCache: state.tileCache,
-      visibleTiles: state.visibleTileRef.tiles,
       frameIds,
       allFrameIds,
       playheadIndex,
-      maxZoom,
+      zoomLevels,
       tileGrid,
+      tileStates,
       prefetchedUnusedResidentCount: tileStats.prefetchedUnusedResidentCount,
       prefetchedUnusedResidentBytes: tileStats.prefetchedUnusedResidentBytes,
       prefetchedWastedCount: tileStats.prefetchedWastedCount,
