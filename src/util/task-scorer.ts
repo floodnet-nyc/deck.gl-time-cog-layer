@@ -1,6 +1,6 @@
 import type { InteractionMode, NormalizedTimeCOGFrame, ScoringWeights } from "../types.js";
 import type { SequenceTileCache, TileQuality } from "../sequence-tile-cache.js";
-import type { TileTask } from "../task-queue.js";
+import type { TileTask } from "./task-queue.js";
 
 /** Prefetch snapshot subset used only by the scoring functions. */
 export type ScoringContext = {

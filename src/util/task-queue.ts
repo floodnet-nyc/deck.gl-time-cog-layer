@@ -1,5 +1,5 @@
-import type { SequenceTileCache } from "./sequence-tile-cache.js";
-import type { TileQuality } from "./sequence-tile-cache.js";
+import type { SequenceTileCache } from "../sequence-tile-cache.js";
+import type { TileQuality } from "../sequence-tile-cache.js";
 
 export type TileCoord = { x: number; y: number; z: number };
 

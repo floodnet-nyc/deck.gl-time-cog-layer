@@ -7,7 +7,7 @@ import type {
 import type { SequenceTileCache } from "./sequence-tile-cache.js";
 import { isMissingTileError } from "./util/tile-utils.js";
 import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWeights } from "./types.js";
-import { TaskQueue, taskKey, type TileCoord, type TileTask } from "./task-queue.js";
+import { TaskQueue, taskKey, type TileCoord, type TileTask } from "./util/task-queue.js";
 import {
   scoreTask,
   qualityForTask,

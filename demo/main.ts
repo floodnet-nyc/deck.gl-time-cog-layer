@@ -10,7 +10,7 @@ import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
 import type { Texture } from "@luma.gl/core";
 import type { NormalizedTimeCOGFrame, TimeCOGFrame } from "../src/index.js";
 import { TimeCOGLayer, findNearestFrameIndex, normalizeFrameCatalog } from "../src/index.js";
-import { renderTileDiagnostics } from "../src/util/tile-diagnostics.js";
+import { renderTileDiagnostics } from "../src/util/diagnostics/tile-diagnostics.js";
 import "./style.css";
 
 const DISPLAY_OPACITY = 0.86;

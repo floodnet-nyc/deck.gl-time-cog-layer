@@ -373,7 +373,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
       previewBias: bias,
       visibleTileRef: state.visibleTileRef,
       geotiffRegistry: state.geotiffRegistry,
-      onVisibleTilesChange: () => this.updatePrefetch(),
+      // onVisibleTilesChange: () => this.updatePrefetch(),
       onGeoTIFFLoad: onGeoTIFFLoad ?? undefined,
     } as object);
   }
