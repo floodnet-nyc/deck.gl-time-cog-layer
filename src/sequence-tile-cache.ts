@@ -1,6 +1,5 @@
 import type { Texture } from "@luma.gl/core";
 
-/** Whether a cached tile is a coarse preview or a full-resolution tile. */
 export type TileQuality = "preview" | "full";
 export type TileOrigin = "display" | "prefetch";
 
@@ -13,12 +12,9 @@ export type Tile = {
 }
 
 /**
- * A single cached tile entry.
- *
- * The `x`, `y`, `z` fields are stored redundantly (they also appear
- * in the cache key) so that diagnostic code can enumerate entries
- * without parsing string keys.  `lastAccessMs` drives the
- * LRU-inspired eviction policy.
+ * A single cached tile entry. `x`, `y`, `z` are stored redundantly
+ * (also in the cache key) so diagnostic code can enumerate entries
+ * without parsing string keys.
  */
 export type CachedTile = Tile & {
   x: number;
@@ -39,27 +35,16 @@ export type TileCacheStats = {
   protectedFrameIds: string[];
   displayHitCount: number;
   displayMissCount: number;
-  /** Resident prefetched tiles currently in cache. */
   prefetchedResidentCount: number;
-  /** Resident prefetched bytes currently in cache. */
   prefetchedResidentBytes: number;
-  /** Resident prefetched tiles that have not yet been displayed. */
   prefetchedUnusedResidentCount: number;
-  /** Resident prefetched bytes that have not yet been displayed. */
   prefetchedUnusedResidentBytes: number;
-  /** Cumulative prefetched tiles loaded into cache. */
   prefetchedLoadedCount: number;
-  /** Cumulative prefetched bytes loaded into cache. */
   prefetchedLoadedBytes: number;
-  /** Cumulative prefetched tiles later displayed. */
   prefetchedUsedCount: number;
-  /** Cumulative prefetched bytes later displayed. */
   prefetchedUsedBytes: number;
-  /** Prefetched tiles evicted before display. */
   prefetchedWastedCount: number;
-  /** Prefetched bytes evicted before display. */
   prefetchedWastedBytes: number;
-  /** Cumulative tiles evicted (for rate computation). */
   evictedTotal: number;
 };
 
@@ -70,16 +55,11 @@ type CacheInsert = Omit<
   origin?: TileOrigin;
 };
 
-/**
- * Configuration knobs for the tile cache.
- *
- * Eviction is governed by up to four independent limits; the first
- * limit that is exceeded triggers eviction.
- */
+/** Eviction is governed by up to three independent limits; the first limit exceeded triggers eviction. */
 export type TileCachePolicy = {
   /** Maximum total bytes of cached tile data. */
   memoryBytes?: number;
-  /** Maximum number of distinct frames allowed in the cache.  Evicts the least-recently-accessed frame first. */
+  /** Maximum number of distinct frames in the cache. Evicts the least-recently-accessed frame first. */
   maxFrames?: number;
   /** Maximum number of individual tile entries across all frames. */
   maxTiles?: number;
@@ -97,25 +77,21 @@ function tileKey(
 /**
  * GPU-texture cache keyed by `(frameId, tileX, tileY, zoom)`.
  *
- * ## Role in the architecture
- *
- * Both the `TimeSequenceTileLayer` sublayer and the `FramePrefetcher`
- * share a single instance of this cache.  When the display frame
- * changes and `tileset.reloadAll()` fires, the sublayer's
+ * Both the {@link TimeSequenceTileLayer} sublayer and the
+ * {@link FramePrefetcher} share a single instance. When the display
+ * frame changes and `tileset.reloadAll()` fires, the sublayer's
  * `getTileData` wrapper checks the cache for the new frame before
- * falling back to a COG fetch.  Cache hits return instantly (the
- * textures are already on the GPU), which is what makes frame
- * transitions flicker-free.
+ * falling back to a COG fetch. Cache hits return instantly (the
+ * textures are already on the GPU), producing flicker-free frame
+ * transitions.
  *
- * ## Eviction policy
+ * ## Eviction
  *
  * Entries marked as **protected** (current frame + immediate
- * neighbours) are never evicted.  Among unprotected entries, the
- * least-recently-accessed tile is selected for eviction, with
- * full-resolution tiles receiving a 30-second age penalty relative
- * to preview tiles (making full-res tiles more vulnerable to
- * eviction).  This keeps close-to-playhead preview tiles available
- * when memory is tight.
+ * neighbours) are never evicted. Among unprotected entries, the
+ * least-recently-accessed tile is selected, with full-resolution
+ * tiles receiving a 30-second age penalty relative to preview tiles
+ * (making full-res tiles more vulnerable to eviction).
  *
  * Destroying a cache entry calls `texture.destroy()` on the
  * underlying luma.gl `Texture`, releasing GPU memory.
@@ -144,10 +120,6 @@ export class SequenceTileCache {
     this.evict();
   }
 
-  /**
-   * Retrieve a cached tile.  Updates `lastAccessMs` so that the
-   * entry is considered recently used for eviction purposes.
-   */
   get(
     frameId: string,
     x: number,
@@ -159,7 +131,7 @@ export class SequenceTileCache {
 
   /**
    * Read a cached tile without affecting recency or hit-rate telemetry.
-   * Use this for diagnostics, scoring, and coverage computations.
+   * Use for diagnostics, scoring, and coverage computations.
    */
   peek(
     frameId: string,
@@ -168,45 +140,6 @@ export class SequenceTileCache {
     z: number,
   ): CachedTile | undefined {
     return this.tiles.get(tileKey(frameId, x, y, z));
-  }
-
-  /**
-   * Return the best available cached tile for a given coordinate,
-   * searching progressively coarser zoom levels.
-   *
-   * First tries the exact `(frameId, x, y, z)` key.  On miss, maps
-   * the coordinates to coarser zoom levels (power-of-2 pyramid) up to
-   * `maxBias` levels and returns the first hit — which is the closest
-   * available resolution to the target zoom.
-   *
-   * @internal Not used by the current render path (progressive overview
-   * loading is intentionally disabled — see `_getTileDataCallback` in
-   * `TimeSequenceTileLayer`). Preserved for future re-enablement.
-   */
-  getBest(
-    frameId: string,
-    x: number,
-    y: number,
-    z: number,
-    maxBias = 2,
-  ): CachedTile | undefined {
-    let cx = x;
-    let cy = y;
-    let cz = z;
-
-    for (let bias = 0; bias <= maxBias && cz >= 0; bias += 1) {
-      const tile = this.lookup(frameId, cx, cy, cz);
-
-      if (tile) {
-        return tile;
-      }
-
-      cx = Math.floor(cx / 2);
-      cy = Math.floor(cy / 2);
-      cz = cz - 1;
-    }
-
-    return undefined;
   }
 
   /**
@@ -238,11 +171,10 @@ export class SequenceTileCache {
   }
 
   /**
-   * Store a tile.  If an entry already exists at the same key, the
-   * new tile is only stored when it represents a quality upgrade
-   * (preview → full) and the frame is not protected.  When the frame
-   * is protected the existing entry is kept regardless of quality.
-   * The old texture is destroyed on replacement.
+   * Store a tile. Only replaces an existing entry on quality upgrade
+   * (preview → full) and when the frame is not protected. Protected
+   * entries are kept regardless of quality. The old texture is
+   * destroyed on replacement.
    */
   put(
     frameId: string,
@@ -294,20 +226,13 @@ export class SequenceTileCache {
     this.evict();
   }
 
-  /**
-   * Mark a set of frame IDs as immune to eviction.
-   * Typically called with the current display frame and the first
-   * few scheduled frames after each `updateState`.
-   */
+  /** Mark a set of frame IDs as immune to eviction. */
   protect(frameIds: string[]): void {
     this.protected = new Set(frameIds);
     this.evict();
   }
 
-  /**
-   * Aggressively evict all tiles belonging to a specific frame,
-   * destroying their GPU textures.  Useful on seek / scrub.
-   */
+  /** Aggressively evict all tiles for a frame, destroying GPU textures. */
   purgeFrame(frameId: string): void {
     for (const [key, tile] of this.tiles) {
       if (tile.frameId === frameId) {
@@ -318,10 +243,7 @@ export class SequenceTileCache {
     }
   }
 
-  /**
-   * Destroy all GPU textures and clear the cache.
-   * Called from `TimeCOGLayer.finalizeState`.
-   */
+  /** Destroy all GPU textures and clear the cache. */
   destroy(): void {
     for (const tile of this.tiles.values()) {
       this.retireTile(tile);
@@ -400,17 +322,15 @@ export class SequenceTileCache {
     return tile;
   }
 
-  /** Record a display-path cache hit. */
   recordDisplayHit(): void {
     this.displayHitCount += 1;
   }
 
-  /** Record a display-path cache miss. */
   recordDisplayMiss(): void {
     this.displayMissCount += 1;
   }
 
-  /** Mark a tile as having been displayed to the user.  Idempotent. */
+  /** Mark a tile as having been displayed. Idempotent. */
   markDisplayed(
     frameId: string,
     x: number,
@@ -478,6 +398,11 @@ export class SequenceTileCache {
     }
   }
 
+  /**
+   * Select the best tile to evict. Protected tiles are skipped.
+   * Full-resolution tiles receive a 30-second age penalty so they
+   * are evicted before preview tiles of similar age.
+   */
   private deleteBestCandidate(): void {
     if (this.tiles.size === 0) {
       return;
@@ -602,11 +527,18 @@ export class SequenceTileCache {
     return total;
   }
 
+  /**
+   * Destroy a tile's GPU textures and update statistics.
+   *
+   * Tiles that were never displayed are destroyed immediately (the
+   * TileLayer never held a reference). Displayed tiles rely on the
+   * TileLayer lifecycle for GPU cleanup — destroying them here would
+   * risk a double-free if the TileLayer still references the texture.
+   */
   private retireTile(tile: CachedTile): void {
     this.evictedTotal += 1;
 
     if (!tile.wasDisplayed) {
-      // TODO: can we rely on garbage collection? Don't want to interfere with TileLayer lifecycle
       tile.texture.destroy();
       tile.mask?.destroy();
 
@@ -614,13 +546,6 @@ export class SequenceTileCache {
         this.prefetchedWastedCount += 1;
         this.prefetchedWastedBytes += tile.byteLength;
       }
-      return;
     }
-
-    // this.retiredTextures.add(tile.texture);
-
-    // if (tile.mask) {
-    //   this.retiredTextures.add(tile.mask);
-    // }
   }
 }

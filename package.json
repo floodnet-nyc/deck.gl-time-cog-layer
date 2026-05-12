@@ -20,9 +20,10 @@
     "build": "tsc -p tsconfig.build.json",
     "build:demo": "vite build",
     "preview": "vite preview",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "tsx --test test/*.test.ts"
   },
   "devDependencies": {
+    "tsx": "^4.21.0",
     "typescript": "~6.0.2",
     "vite": "^8.0.10"
   },

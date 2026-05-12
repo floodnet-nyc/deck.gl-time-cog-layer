@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TaskQueue, taskKey, SequenceTileCache } from "../dist/index.js";
+import { TaskQueue, taskKey, SequenceTileCache } from "../src/index.ts";
 
 test("TaskQueue starts with empty queue, queuedKeys, inFlight", () => {
   const q = new TaskQueue();

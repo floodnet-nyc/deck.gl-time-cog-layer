@@ -14,9 +14,6 @@ const DEFAULT_IDLE_THRESHOLD_MS = 300;
  * | 80–200 ms            | "seeking"   |
  * | >= idleThreshold     | "idle"      |
  * | actively playing     | "playing"   |
- *
- * The idle threshold defaults to 300 ms and can be overridden via
- * `fullResUpgradeIdleMs`.
  */
 export function detectInteractionMode(
   playing: boolean,

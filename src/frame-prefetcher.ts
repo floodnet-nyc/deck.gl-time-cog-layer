@@ -14,7 +14,6 @@ import {
 } from "./util/task-scorer.js";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 
-/** The current playback snapshot, passed from `TimeCOGLayer.updateState`. */
 type PrefetchSnapshot = {
   targetFrame: NormalizedTimeCOGFrame;
   scheduledFrames: NormalizedTimeCOGFrame[];
@@ -49,14 +48,12 @@ type PrefetchSnapshot = {
 /**
  * Background tile-prefetch pipeline for nearby frames.
  *
- * ## Role
- *
- * The prefetcher runs after every `TimeCOGLayer.updateState`.  It
- * receives the current visible tile coordinates, the frame schedule
- * window, the interaction mode, and the quality policy.  For each
- * scheduled frame (excluding the target, which is already being
- * loaded by the sublayer), it creates `(frameId, x, y, z)`
- * tasks and scores them by temporal distance and playback direction.
+ * On every `TimeCOGLayer.updateState`, the prefetcher receives the
+ * current visible tile coordinates, the frame schedule window, the
+ * interaction mode, and the quality policy. For each scheduled frame
+ * (excluding the target, already loaded by the sublayer), it creates
+ * `(frameId, x, y, z)` tasks and scores them by temporal distance,
+ * playback direction, buffer need, and telemetry-based estimates.
  *
  * ## Scoring
  *
@@ -64,19 +61,25 @@ type PrefetchSnapshot = {
  * temporal proximity, directional playback boost, buffer shortfall
  * pressure, interaction-mode override, quality-urgency (preview
  * upgrade / fresh-preview bonus), log₂ size-hint penalty, and
- * ETA-based latency penalty.  The final score is clamped to
- * `[0, 200]`.
+ * ETA-based latency penalty. The final score is clamped to `[0, 200]`.
+ *
+ * ## Adaptive concurrency
+ *
+ * When abort rate exceeds 50%, max concurrency is halved to reduce
+ * wasted work. When abort rate stays below 10% for 3+ consecutive
+ * update cycles, concurrency is gradually restored.
  */
 export class FramePrefetcher {
   private tileCache: SequenceTileCache;
   private taskQueue = new TaskQueue();
-  private maxConcurrent: number;
 
   private device: Device | null = null;
   private getTileData: PrefetchSnapshot["getUserTileData"] | null = null;
   private pool: DecoderPool | null = null;
   private layerSignal: AbortSignal | undefined;
   private uploadsThisFrame = 0;
+
+  private maxConcurrent: number;
   private maxDecodeTasks: number;
   private maxGpuUploads: number;
   private readonly originalMaxConcurrent: number;
@@ -91,18 +94,13 @@ export class FramePrefetcher {
   frameAvgBytes = new Map<string, number>();
 
   private defaultScoringWeights: ScoringWeights;
-
-  /** Internal fallback registry.  Used when no shared registry is wired via `update()`. */
   private internalRegistry = new GeoTIFFRegistry(8);
-
-  /** Shared registry injected by the coordinator.  Preferred when set. */
   private sharedRegistry: GeoTIFFRegistry | null = null;
 
   /**
    * Tile keys known to not exist in their source COG (out-of-bounds
-   * `(frameId, x, y, z)` tuples).  Prevents the prefetcher from
-   * infinitely re-requesting tiles that `decodeGeoTIFFTile` returns
-   * `null` for.
+   * coordinates). Prevents the prefetcher from infinitely
+   * re-requesting tiles that `decodeGeoTIFFTile` returns `null` for.
    */
   private missingTileKeys = new Set<string>();
 
@@ -146,6 +144,11 @@ export class FramePrefetcher {
     return this.missingTileKeys;
   }
 
+  /** @internal Public for test assertions on adaptive concurrency. */
+  get currentMaxConcurrent(): number {
+    return this.maxConcurrent;
+  }
+
   update(snapshot: PrefetchSnapshot): void {
     this.device = snapshot.device;
     this.getTileData = snapshot.getUserTileData;
@@ -164,31 +167,7 @@ export class FramePrefetcher {
     const coverage = snapshot.coverage ?? 1;
     const abortRate = this.abortedTasks / (this.totalTasks || 1);
 
-    let effectiveMaxConcurrent = this.maxConcurrent;
-
-    if (abortRate > 0.5 && this.totalTasks > 4) {
-      effectiveMaxConcurrent = Math.max(1, Math.floor(this.originalMaxConcurrent / 2));
-      this.consecutiveLowAbort = 0;
-    } else if (abortRate < 0.1) {
-      this.consecutiveLowAbort += 1;
-
-      if (
-        this.consecutiveLowAbort >= 3 &&
-        this.maxConcurrent < this.originalMaxConcurrent
-      ) {
-        effectiveMaxConcurrent = Math.min(
-          this.originalMaxConcurrent,
-          this.maxConcurrent + 1,
-        );
-        this.consecutiveLowAbort = 0;
-      }
-    } else {
-      this.consecutiveLowAbort = 0;
-    }
-
-    if (effectiveMaxConcurrent !== this.maxConcurrent) {
-      this.maxConcurrent = effectiveMaxConcurrent;
-    }
+    this.maxConcurrent = this.computeConcurrency(abortRate);
 
     const skipFutureFrames = coverage < 0.5 && interactionMode !== "idle";
 
@@ -222,7 +201,8 @@ export class FramePrefetcher {
       for (const tile of snapshot.visibleTiles) {
         const key = taskKey(frame.id, tile.x, tile.y, tile.z);
 
-        if (this.tileCache.peek(frame.id, tile.x, tile.y, tile.z)) {
+        const existing = this.tileCache.peek(frame.id, tile.x, tile.y, tile.z);
+        if (existing?.quality === "full") {
           continue;
         }
 
@@ -303,6 +283,32 @@ export class FramePrefetcher {
     };
   }
 
+  private computeConcurrency(abortRate: number): number {
+    let effective = this.maxConcurrent;
+
+    if (abortRate > 0.5 && this.totalTasks > 4) {
+      effective = Math.max(1, Math.floor(this.originalMaxConcurrent / 2));
+      this.consecutiveLowAbort = 0;
+    } else if (abortRate < 0.1) {
+      this.consecutiveLowAbort += 1;
+
+      if (
+        this.consecutiveLowAbort >= 3 &&
+        this.maxConcurrent < this.originalMaxConcurrent
+      ) {
+        effective = Math.min(
+          this.originalMaxConcurrent,
+          this.maxConcurrent + 1,
+        );
+        this.consecutiveLowAbort = 0;
+      }
+    } else {
+      this.consecutiveLowAbort = 0;
+    }
+
+    return effective;
+  }
+
   private pump(): void {
     while (
       this.taskQueue.activeCount < this.maxConcurrent &&
@@ -323,10 +329,6 @@ export class FramePrefetcher {
   private async executeTask(task: TileTask): Promise<void> {
     const { frameId: id, frameUrl: url, x, y, z } = task;
     const key = taskKey(id, x, y, z);
-
-    if (this.tileCache.get(id, x, y, z)) {
-      return;
-    }
 
     const controller = new AbortController();
     this.taskQueue.start(key, controller, task.frameId);

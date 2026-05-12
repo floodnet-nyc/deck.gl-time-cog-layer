@@ -6,7 +6,7 @@ import type {
   TimeValue,
 } from "../types.js";
 
-/** SAS tokens and other volatile auth params that should be stripped from cache keys. */
+/** SAS tokens and other volatile auth params stripped from cache keys. */
 const VOLATILE_QUERY_PARAMS = new Set([
   "sig",
   "signature",
@@ -29,8 +29,8 @@ const VOLATILE_QUERY_PARAMS = new Set([
 ]);
 
 /**
- * Normalize a `TimeValue` to a millisecond epoch.
- * Accepts `number`, `string` (ISO 8601), or `Date`.
+ * Normalize a `TimeValue` to a millisecond epoch. Accepts `number`,
+ * `string` (ISO 8601), or `Date`.
  */
 export function parseTimeValue(value: TimeValue): number {
   const timeMs =
@@ -102,9 +102,6 @@ export function canonicalizeUrl(input: string): string {
   }
 }
 
-/**
- * Binary search for the nearest frame to a given time.
- */
 export function findNearestFrameIndex(
   catalog: readonly NormalizedTimeCOGFrame[],
   timeMs: number,
@@ -177,12 +174,11 @@ export function findPreviousFrameIndex(
 }
 
 /**
- * Resolve a timestamp into target and display frames according to
- * the configured `MissingFramePolicy`.
+ * Resolve a timestamp into target and display frames according to the
+ * configured `MissingFramePolicy`.
  *
  * `"hold-last"` (default): show the most recent frame at or before
- * the requested time.  This is the least visually disruptive policy
- * for transient gaps.
+ * the requested time (least visually disruptive for transient gaps).
  */
 export function resolveFrameForTime(
   catalog: readonly NormalizedTimeCOGFrame[],

@@ -26,12 +26,10 @@ export function taskKey(
 
 /**
  * Priority-ordered queue of tile-fetch tasks with deduplication and
- * in-flight tracking.
- *
- * Owns `queue` (sorted by priority descending), `queuedKeys` (dedup
- * set), and `inFlight` (abort-aware task registry).  The external
- * prefetcher wires the actual execution; this class handles insertion,
- * pruning, and lifecycle.
+ * in-flight tracking. Owns `queue` (sorted by priority descending),
+ * `queuedKeys` (dedup set), and `inFlight` (abort-aware task registry).
+ * The external prefetcher wires the actual execution; this class
+ * handles insertion, pruning, and lifecycle.
  */
 export class TaskQueue {
   queue: TileTask[] = [];
@@ -46,13 +44,11 @@ export class TaskQueue {
     return this.queue.length;
   }
 
-  /** Add tasks, then re-sort by priority (highest first). */
   enqueue(tasks: TileTask[]): void {
     this.queue.push(...tasks);
     this.queue.sort((a, b) => b.priority - a.priority);
   }
 
-  /** Remove and return the highest-priority task, or undefined. */
   dequeue(): TileTask | undefined {
     return this.queue.shift();
   }
@@ -80,10 +76,7 @@ export class TaskQueue {
     this.queuedKeys = nextKeys;
   }
 
-  /**
-   * Abort in-flight tasks whose frame is no longer in the schedule
-   * window.  Called on every `update()` before enqueuing new work.
-   */
+  /** Abort in-flight tasks whose frame is no longer in the schedule window. */
   abortStale(scheduledIds: Set<string>): void {
     const toAbort: string[] = [];
 
@@ -99,32 +92,26 @@ export class TaskQueue {
     }
   }
 
-  /** Register an in-flight task with its abort controller. */
   start(key: string, controller: AbortController, frameId: string): void {
     this.inFlight.set(key, { controller, frameId });
   }
 
-  /** Remove a completed or aborted task from in-flight tracking. */
   finish(key: string): void {
     this.inFlight.delete(key);
   }
 
-  /** Check whether a key is already queued or in-flight. */
   isTracked(key: string): boolean {
     return this.queuedKeys.has(key) || this.inFlight.has(key);
   }
 
-  /** Mark a key as queued (decoupled from `enqueue` for external coordination). */
   markQueued(key: string): void {
     this.queuedKeys.add(key);
   }
 
-  /** Remove a key from the dedup set (called when dequeueing for execution). */
   unmarkQueued(key: string): void {
     this.queuedKeys.delete(key);
   }
 
-  /** Abort all in-flight tasks and clear the queue. */
   abortAll(): void {
     for (const [, entry] of this.inFlight) {
       entry.controller.abort();

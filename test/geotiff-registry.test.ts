@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GeoTIFFRegistry, SequenceTileCache } from "../dist/index.js";
+import { GeoTIFFRegistry, SequenceTileCache } from "../src/index.ts";
 
 test("GeoTIFFRegistry.get returns undefined for unknown frame", () => {
   const registry = new GeoTIFFRegistry();

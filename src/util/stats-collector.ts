@@ -6,9 +6,6 @@ import type {
 } from "../types.js";
 import type { TimeCOGLayerState } from "../time-cog-layer.js";
 
-/**
- * Build the buffer-state payload for `onBufferStateChange`.
- */
 export function buildBufferState(
   _tileCache: SequenceTileCache,
   state: TimeCOGLayerState,
@@ -22,10 +19,6 @@ export function buildBufferState(
   };
 }
 
-/**
- * Combine tile-cache and prefetcher statistics into the
- * `TimeCOGStats` struct dispatched via `onStats`.
- */
 export function buildStats(
   tileCache: SequenceTileCache,
   prefetcher: FramePrefetcher,

@@ -1,5 +1,5 @@
 import type { InteractionMode, NormalizedTimeCOGFrame, ScoringWeights } from "../types.js";
-import type { SequenceTileCache, TileQuality } from "../sequence-tile-cache.js";
+import type { SequenceTileCache } from "../sequence-tile-cache.js";
 import type { TileTask } from "./task-queue.js";
 
 /** Prefetch snapshot subset used only by the scoring functions. */
@@ -231,16 +231,4 @@ export function etaPenalty(
   return -Math.min(20, penalty);
 }
 
-/**
- * Determine the target quality for a new prefetch task.
- * Currently always returns `"full"` (progressive preview loading is
- * deferred).
- */
-export function qualityForTask(
-  mode: InteractionMode,
-  _distanceIndex: number,
-  _lowResFirst: boolean | undefined,
-): { quality: TileQuality } {
-  void mode;
-  return { quality: "full" };
-}
+

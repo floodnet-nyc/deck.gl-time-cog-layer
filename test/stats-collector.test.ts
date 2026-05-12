@@ -6,7 +6,7 @@ import {
   FramePrefetcher,
   buildBufferState,
   buildStats,
-} from "../dist/index.js";
+} from "../src/index.ts";
 
 function makeFrame(id, timeMs) {
   return { id, timeMs, url: `/${id}.tif`, cacheKey: id, sourceIndex: 0 };

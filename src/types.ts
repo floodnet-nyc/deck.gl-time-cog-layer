@@ -154,7 +154,6 @@ export type SchedulerPolicy = {
 
 export type TimeCOGCachePolicy = TileCachePolicy & {
   maxFrames?: number;
-  maxTileEntries?: number;
   memoryBytes?: number;
 };
 

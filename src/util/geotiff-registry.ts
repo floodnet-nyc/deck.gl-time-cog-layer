@@ -8,13 +8,12 @@ const DEFAULT_MAX_SIZE = 12;
 
 /**
  * Shared GeoTIFF instance cache used by both the render sublayer
- * and the background prefetcher.  Consolidating GeoTIFF lifecycle in
- * one place avoids redundant HTTP COG-header fetches (which can be
- * hundreds of kB for multi-overview files).
+ * and the background prefetcher. Frame-id-keyed to avoid redundant
+ * HTTP COG-header fetches (which can be hundreds of kB for
+ * multi-overview files).
  *
- * The registry is frame-id-keyed so that the same COG URL opened for
- * two different frame identities (e.g. a reused COG across timesteps)
- * is treated as two separate entries.
+ * `decodeTile` is the single entry point for both callers,
+ * consolidating open → overview-select → bounds-check → user-decode.
  */
 export class GeoTIFFRegistry {
   private map = new Map<string, GeoTIFF>();
@@ -24,7 +23,7 @@ export class GeoTIFFRegistry {
     this.maxSize = maxSize;
   }
 
-  /** @internal Exposed for test pre-population (backward compat with tests that set `prefetcher.geotiffs.set(...)`). */
+  /** @internal Exposed for test pre-population. */
   get mutableMap(): Map<string, GeoTIFF> {
     return this.map;
   }
@@ -73,15 +72,6 @@ export class GeoTIFFRegistry {
     return geotiff;
   }
 
-  /**
-   * Get-or-open the GeoTIFF for `frameId`, select the correct overview
-   * for zoom `z`, bounds-check the tile at `(x, y)`, call the
-   * user-provided decode function, and catch missing-tile errors.
-   *
-   * This is the single entry point used by both the render sublayer
-   * and the background prefetcher — the two callers can no longer
-   * drift.
-   */
   async decodeTile<T>(
     {
       id, url, x, y, z, getTileData

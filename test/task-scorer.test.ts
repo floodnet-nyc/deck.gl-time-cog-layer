@@ -11,9 +11,8 @@ import {
   qualityUrgencyScore,
   sizeHintPenalty,
   etaPenalty,
-  qualityForTask,
   FALLBACK_WEIGHTS,
-} from "../dist/index.js";
+} from "../src/index.ts";
 
 function makeCtx(overrides = {}) {
   const tileCache = new SequenceTileCache();
@@ -287,28 +286,6 @@ test("etaPenalty: penalty capped at -20", () => {
   });
   const task = makeTask({ byteSizeHint: 1e9 });
   assert.equal(etaPenalty(task, ctx, FALLBACK_WEIGHTS), -20);
-});
-
-// ─── qualityForTask ───
-
-test("qualityForTask: returns full when lowResFirst is false", () => {
-  const result = qualityForTask("playing", 0, false);
-  assert.deepEqual(result, { quality: "full" });
-});
-
-test("qualityForTask: returns full during seeking", () => {
-  const result = qualityForTask("seeking", 0, true);
-  assert.deepEqual(result, { quality: "full" });
-});
-
-test("qualityForTask: returns full during scrubbing", () => {
-  const result = qualityForTask("scrubbing", 0, true);
-  assert.deepEqual(result, { quality: "full" });
-});
-
-test("qualityForTask: returns full during playing when lowResFirst is default", () => {
-  const result = qualityForTask("playing", 0, undefined);
-  assert.deepEqual(result, { quality: "full" });
 });
 
 // ─── scoreTask integration ───

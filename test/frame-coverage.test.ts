@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SequenceTileCache, computeCoverage, computeBufferState, isFrameReady } from "../dist/index.js";
+import { SequenceTileCache, computeCoverage, computeBufferState, isFrameReady } from "../src/index.ts";
 
 function makeTexture() {
   return { destroy() {} };

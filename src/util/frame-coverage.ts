@@ -5,7 +5,7 @@ type TileCoord = { x: number; y: number; z: number };
 
 /**
  * Compute the fraction of visible tiles cached at full quality for a
- * frame (0–1).  Returns 1 when there is no frame or an empty visible
+ * frame (0–1). Returns 1 when there is no frame or an empty visible
  * tile set so that the prefetcher doesn't artificially clamp
  * throughput.
  */
@@ -32,18 +32,15 @@ export function computeCoverage(
 }
 
 export type BufferCoverage = {
-  /** Contiguous full-quality frames ahead of the playhead. */
   bufferedAhead: number;
-  /** Contiguous full-quality frames behind the playhead. */
   bufferedBehind: number;
-  /** Target number of forward frames (from `bufferPolicy.forwardFrames`). */
   targetAhead: number;
 };
 
 /**
- * Count how many contiguous frames ahead of and behind the playhead
- * have full tile coverage.  Scheduled frames are sorted by timestamp
- * so the walk follows temporal order, not priority order.
+ * Count contiguous full-quality frames ahead of and behind the
+ * playhead. Scheduled frames are sorted by timestamp so the walk
+ * follows temporal order.
  */
 export function computeBufferState(
   tileCache: SequenceTileCache,
@@ -85,11 +82,6 @@ export function computeBufferState(
   return { bufferedAhead, bufferedBehind, targetAhead };
 }
 
-/**
- * Check whether a frame has not yet fired `onFrameReady` but is now
- * fully cached.  Returns the set of newly ready frames for the caller
- * to callback.
- */
 export function isFrameReady(
   tileCache: SequenceTileCache,
   readyFrameIds: ReadonlySet<string>,

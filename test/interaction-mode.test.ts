@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { detectInteractionMode } from "../dist/index.js";
+import { detectInteractionMode } from "../src/index.ts";
 
 test("playing returns 'playing' regardless of lastInteractionMs", () => {
   assert.equal(detectInteractionMode(true, 0), "playing");

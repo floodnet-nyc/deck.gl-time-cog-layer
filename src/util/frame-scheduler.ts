@@ -18,21 +18,10 @@ const DEFAULT_FORWARD_FRAMES = 6;
  * Returns a priority-sorted list of frames within the buffer window.
  * Frames closer to the target index score higher; frames in the
  * direction of playback receive a small directional boost.
- * The list is consumed both by the `FramePrefetcher` (to decide which
- * frames to prefetch tiles for) and by `TimeCOGLayer.updateFrameState`
- * (for cache protection).
  *
- * When `maxFrameRate` > 0 and `playing` is true, frames are time-bucketed
- * and only one representative per bucket is scheduled to prevent visual
- * stutter at sub-frame-rate playback speeds.
- *
- * @param catalog      Full ordered frame catalog.
- * @param targetIndex  Index of the anchor frame (may differ from the
- *                     display frame under `maxFrameRate` bucketing).
- * @param policy       Buffer window sizes (default 2 backward, 6 forward).
- * @param playbackRate 0 = paused, sign indicates direction.
- * @param maxFrameRate Maximum display frame rate (0 = unlimited).
- * @param playing      Whether playback is active.
+ * When `maxFrameRate` > 0 and `playing` is true, frames are
+ * time-bucketed and only one representative per bucket is scheduled
+ * to prevent visual stutter at sub-frame-rate playback speeds.
  */
 export function scheduleFrameWindow(
   catalog: readonly NormalizedTimeCOGFrame[],
@@ -51,41 +40,26 @@ export function scheduleFrameWindow(
   const direction = playing ? Math.sign(playbackRate) || 1 : 0;
   const before = direction < 0 ? forwardFrames : backwardFrames;
   const after = direction < 0 ? backwardFrames : forwardFrames;
-  const representative = direction < 0 ? "last" : "first";
+
   const bucketIntervalMs = maxFrameRate > 0 && playing
     ? (1000 / maxFrameRate) * Math.abs(playbackRate)
     : 0;
-  const anchorIndex = representativeIndexForBucket(
-    catalog,
-    targetIndex,
-    bucketIntervalMs,
-    representative,
-  );
-  const targetBucket = bucketForIndex(catalog, anchorIndex, bucketIntervalMs);
 
-  const backward = [
-    anchorIndex,
-    ...collectFrames(
-      catalog,
-      anchorIndex - 1,
-      before,
-      -1,
-      bucketIntervalMs,
-      representative,
-      targetBucket,
-    ),
-  ];
-  const forward = collectFrames(
-    catalog,
-    anchorIndex + 1,
-    after,
-    1,
-    bucketIntervalMs,
-    representative,
-    targetBucket,
+  const representative = direction < 0 ? "last" : "first";
+  const anchorIndex = representativeIndex(catalog, targetIndex, bucketIntervalMs, representative);
+
+  const anchorBucket = bucketIntervalMs > 0
+    ? computeBucket(catalog, anchorIndex, bucketIntervalMs)
+    : null;
+
+  const backwardIndices = collectFrameIndices(
+    catalog, anchorIndex - 1, before, -1, bucketIntervalMs, representative, anchorBucket,
+  );
+  const forwardIndices = collectFrameIndices(
+    catalog, anchorIndex + 1, after, 1, bucketIntervalMs, representative, anchorBucket,
   );
 
-  return [...backward.reverse(), ...forward]
+  return [...backwardIndices.reverse(), anchorIndex, ...forwardIndices]
     .map((index) => ({
       frame: catalog[index],
       index,
@@ -94,25 +68,35 @@ export function scheduleFrameWindow(
     .sort((a, b) => b.priority - a.priority);
 }
 
-function collectFrames(
+/**
+ * Walk from `startIndex` in direction `step`, collecting up to
+ * `count` frame indices. When `bucketIntervalMs > 0`, adjacent frames
+ * in the same time bucket are skipped — only the representative
+ * (`"first"` or `"last"`) per bucket is kept.
+ */
+function collectFrameIndices(
   catalog: readonly NormalizedTimeCOGFrame[],
-  targetIndex: number,
+  startIndex: number,
   count: number,
   step: -1 | 1,
   bucketIntervalMs: number,
   representative: "first" | "last",
-  lastBucket: number | undefined,
+  excludeBucket: number | null,
 ): number[] {
   const indices: number[] = [];
+  let lastBucket = excludeBucket;
 
-  for (let index = targetIndex; index >= 0 && index < catalog.length && indices.length < count;) {
-    const bucket = bucketForIndex(catalog, index, bucketIntervalMs);
+  for (
+    let index = startIndex;
+    index >= 0 && index < catalog.length && indices.length < count;
+  ) {
+    const bucket = computeBucket(catalog, index, bucketIntervalMs);
     if (lastBucket === bucket) {
       index += step;
       continue;
     }
 
-    const { start, end } = bucketBoundsForIndex(catalog, index, bucketIntervalMs);
+    const { start, end } = findBucketBounds(catalog, index, bucketIntervalMs);
     indices.push(representative === "first" ? start : end);
     lastBucket = bucket;
     index = step > 0 ? end + 1 : start - 1;
@@ -121,27 +105,27 @@ function collectFrames(
   return indices;
 }
 
-function bucketBoundsForIndex(
+function findBucketBounds(
   catalog: readonly NormalizedTimeCOGFrame[],
   index: number,
   bucketIntervalMs: number,
 ): { start: number; end: number } {
-  const bucket = bucketForIndex(catalog, index, bucketIntervalMs);
+  const bucket = computeBucket(catalog, index, bucketIntervalMs);
   let start = index;
   let end = index;
 
-  while (start - 1 >= 0 && bucketForIndex(catalog, start - 1, bucketIntervalMs) === bucket) {
+  while (start - 1 >= 0 && computeBucket(catalog, start - 1, bucketIntervalMs) === bucket) {
     start -= 1;
   }
 
-  while (end + 1 < catalog.length && bucketForIndex(catalog, end + 1, bucketIntervalMs) === bucket) {
+  while (end + 1 < catalog.length && computeBucket(catalog, end + 1, bucketIntervalMs) === bucket) {
     end += 1;
   }
 
   return { start, end };
 }
 
-function representativeIndexForBucket(
+function representativeIndex(
   catalog: readonly NormalizedTimeCOGFrame[],
   index: number,
   bucketIntervalMs: number,
@@ -151,11 +135,15 @@ function representativeIndexForBucket(
     return index;
   }
 
-  const { start, end } = bucketBoundsForIndex(catalog, index, bucketIntervalMs);
+  const { start, end } = findBucketBounds(catalog, index, bucketIntervalMs);
   return representative === "first" ? start : end;
 }
 
-function bucketForIndex(
+/**
+ * Compute the time bucket for a frame. When `bucketIntervalMs` is 0,
+ * each frame gets its own bucket (its `sourceIndex`).
+ */
+function computeBucket(
   catalog: readonly NormalizedTimeCOGFrame[],
   index: number,
   bucketIntervalMs: number,
@@ -185,7 +173,7 @@ function scoreFrame(index: number, targetIndex: number, direction: number): numb
 /**
  * When `maxFrameRate` is set and playback is active, suppress frame
  * changes that land in the same time bucket as the previously
- * displayed frame.  This prevents visual "stutter" when the clock
+ * displayed frame. This prevents visual "stutter" when the clock
  * is ticking faster than the configured display rate.
  *
  * Returns the original `resolvedFrame` if the new frame belongs to a

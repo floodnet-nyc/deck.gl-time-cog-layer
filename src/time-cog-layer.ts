@@ -5,7 +5,7 @@ import type {
 } from "@deck.gl/core";
 import { CompositeLayer } from "@deck.gl/core";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
-import type { _Tile2DHeader, _Tileset2DProps, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
+import type { _Tile2DHeader, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
 import type { Device } from "@luma.gl/core";
 import {
   findNearestFrameIndex,
@@ -39,6 +39,7 @@ import type {
   TimeValue,
 } from "./types.js";
 import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
+import { buildTileDiagSnapshot } from "./util/tile-diagnostics.js";
 import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
 
 /**
@@ -725,97 +726,38 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
    *   playhead-centered window. Omit to capture the full timeline.
    */
   getDiagnosticSnapshot(windowSize?: number): TileDiagSnapshot {
-    const empty: TileDiagSnapshot = {
-      frameIds: [],
-      allFrameIds: [],
-      playheadIndex: 0,
-      zoomLevels: [],
-      visibleTiles: [],
-      tileGrid: {},
-      tileStates: {},
-      prefetchedUnusedResidentCount: 0,
-      prefetchedUnusedResidentBytes: 0,
-      prefetchedWastedCount: 0,
-      prefetchedWastedBytes: 0,
-      prefetchedUsedCount: 0,
-      prefetchedLoadedCount: 0,
-      abortedTasks: 0,
-      scheduledFrameIds: new Set<string>(),
-      inFlightKeys: new Set<string>(),
-    };
     const state = this.state;
 
-    if (!state || !state.tileCache) {
+    if (!state?.tileCache) {
+      const empty: TileDiagSnapshot = {
+        frameIds: [],
+        allFrameIds: [],
+        playheadIndex: 0,
+        zoomLevels: [],
+        visibleTiles: [],
+        tileGrid: {},
+        tileStates: {},
+        prefetchedUnusedResidentCount: 0,
+        prefetchedUnusedResidentBytes: 0,
+        prefetchedWastedCount: 0,
+        prefetchedWastedBytes: 0,
+        prefetchedUsedCount: 0,
+        prefetchedLoadedCount: 0,
+        abortedTasks: 0,
+        scheduledFrameIds: new Set<string>(),
+        inFlightKeys: new Set<string>(),
+      };
       return empty;
     }
 
-    const tileStats = state.tileCache.stats();
-    const prefetchStats = state.prefetcher.stats();
-
-    const tileGrid: Record<number, { cols: number; rows: number }> = {};
-    const tileStates: TileDiagSnapshot["tileStates"] = {};
-    const visibleTiles = state.visibleTileRef?.tiles ?? [];
-
-    for (const v of visibleTiles) {
-      if (!tileGrid[v.z]) {
-        tileGrid[v.z] = { cols: v.x + 1, rows: v.y + 1 };
-      } else {
-        tileGrid[v.z]!.cols = Math.max(tileGrid[v.z]!.cols, v.x + 1);
-        tileGrid[v.z]!.rows = Math.max(tileGrid[v.z]!.rows, v.y + 1);
-      }
-    }
-
-    for (const [, tile] of state.tileCache.entries()) {
-      tileStates[`${tile.frameId}:${tile.x}:${tile.y}:${tile.z}`] = {
-        quality: tile.quality,
-        origin: tile.origin,
-        wasDisplayed: tile.wasDisplayed,
-      };
-
-      if (!tileGrid[tile.z]) {
-        tileGrid[tile.z] = { cols: tile.x + 1, rows: tile.y + 1 };
-      } else if (visibleTiles.length === 0) {
-        tileGrid[tile.z]!.cols = Math.max(tileGrid[tile.z]!.cols, tile.x + 1);
-        tileGrid[tile.z]!.rows = Math.max(tileGrid[tile.z]!.rows, tile.y + 1);
-      }
-    }
-
-    const allFrameIds = state.catalog.map((f) => f.id);
-    const displayId = state.displayFrame?.id;
-    const playheadInCatalog = displayId
-      ? allFrameIds.indexOf(displayId)
-      : 0;
-    const hasWindow = typeof windowSize === "number" && windowSize > 0;
-    const halfWindow = hasWindow ? Math.floor(windowSize / 2) : 0;
-    const winStart = hasWindow
-      ? Math.max(0, playheadInCatalog - halfWindow)
-      : 0;
-    const winEnd = hasWindow
-      ? Math.min(allFrameIds.length, winStart + windowSize)
-      : allFrameIds.length;
-    const frameIds = allFrameIds.slice(winStart, winEnd);
-    const playheadIndex = Math.max(0, playheadInCatalog - winStart);
-    const zoomLevels = Object.keys(tileGrid)
-      .map(Number)
-      .sort((a, b) => a - b);
-
-    return {
-      frameIds,
-      allFrameIds,
-      playheadIndex,
-      zoomLevels,
-      visibleTiles,
-      tileGrid,
-      tileStates,
-      prefetchedUnusedResidentCount: tileStats.prefetchedUnusedResidentCount,
-      prefetchedUnusedResidentBytes: tileStats.prefetchedUnusedResidentBytes,
-      prefetchedWastedCount: tileStats.prefetchedWastedCount,
-      prefetchedWastedBytes: tileStats.prefetchedWastedBytes,
-      prefetchedUsedCount: tileStats.prefetchedUsedCount,
-      prefetchedLoadedCount: tileStats.prefetchedLoadedCount,
-      abortedTasks: prefetchStats.totalAborted,
-      scheduledFrameIds: new Set(state.scheduledFrames.map((f) => f.id)),
-      inFlightKeys: new Set(state.prefetcher.getInFlightKeys()),
-    };
+    return buildTileDiagSnapshot(
+      state.tileCache,
+      state.prefetcher,
+      state.catalog,
+      state.displayFrame,
+      state.visibleTileRef?.tiles ?? [],
+      state.scheduledFrames,
+      windowSize,
+    );
   }
 }

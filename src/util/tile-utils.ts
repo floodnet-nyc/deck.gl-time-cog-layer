@@ -6,9 +6,9 @@ import proj4 from "proj4";
 import { geoTiffToDescriptor } from "./geotiff-tileset";
 
 /**
- * Select the {@link GeoTIFF} or {@link Overview} image for a given
- * zoom level.  Zoom 0 maps to the coarsest overview; the highest zoom
- * maps to the full-resolution image.
+ * Select the GeoTIFF or Overview image for a given zoom level.
+ * Zoom 0 maps to the coarsest overview; the highest zoom maps to the
+ * full-resolution image.
  */
 export function imageForZ(
   geotiff: GeoTIFF,
@@ -19,10 +19,6 @@ export function imageForZ(
     : geotiff.overviews[geotiff.overviews.length - 1 - z];
 }
 
-/**
- * Bounds-check whether tile `(x, y)` exists within the given image's
- * tile grid.
- */
 export function hasTile(
   image: Pick<GeoTIFF | Overview, "tileCount">,
   x: number,
@@ -35,7 +31,7 @@ export function hasTile(
 
 /**
  * Shared tile-decode pipeline used by both the render sublayer and the
- * background prefetcher.  Consolidates overview selection, bounds
+ * background prefetcher. Consolidates overview selection, bounds
  * checking, the user-decode call, and missing-tile error handling so
  * the two callers cannot drift.
  */
@@ -81,10 +77,9 @@ export async function decodeGeoTIFFTile<T>({
 }
 
 /**
- * Build an {@link AffineTileset} descriptor from an opened {@link GeoTIFF},
- * resolving CRS / projection transforms and meters-per-unit.
+ * Build an AffineTileset descriptor from an opened GeoTIFF, resolving
+ * CRS / projection transforms and meters-per-unit.
  */
-// TODO: do we want GeoTIFF registry to do this instead of TimeSequenceTileLayer (inherited from COGLayer)? Then you could handle per-frame reprojection differences instead of assuming they're all the same.
 export async function getGeoTiffDescriptor(geotiff: GeoTIFF) {
   const crs = geotiff.crs;
   const sourceProjection =
@@ -133,10 +128,8 @@ export async function getGeoTiffDescriptor(geotiff: GeoTIFF) {
 
 /**
  * Map tile coordinates to a coarser zoom level for preview fetches.
- *
  * Assumes a power-of-2 tile pyramid (standard for deck.gl TileLayer
- * and COG overviews).  At bias=1 the tile grid halves in each
- * dimension; at bias=2 it quarters, etc.
+ * and COG overviews).
  */
 export function mapToCoarserZoom(
   x: number,
@@ -155,7 +148,7 @@ export function mapToCoarserZoom(
 
 /**
  * Predicate: is this error caused by requesting a tile coordinate
- * that doesn't exist in the COG?  These are expected (edge tiles)
+ * that doesn't exist in the COG? These are expected (edge tiles)
  * and should be silently ignored.
  */
 export function isMissingTileError(error: unknown): boolean {
