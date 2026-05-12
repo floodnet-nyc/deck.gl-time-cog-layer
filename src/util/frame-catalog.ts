@@ -153,6 +153,10 @@ export function findNearestFrameIndex(
   return timeMs - before.timeMs <= after.timeMs - timeMs ? high : low;
 }
 
+/**
+ * Linear scan for the most recent frame whose timestamp is ≤ `timeMs`.
+ * Returns the catalog index, or −1 if no frame satisfies the condition.
+ */
 export function findPreviousFrameIndex(
   catalog: readonly NormalizedTimeCOGFrame[],
   timeMs: number,

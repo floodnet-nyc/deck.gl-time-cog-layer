@@ -25,6 +25,18 @@ function headersToRecord(headers?: HeadersInit): Record<string, string> {
   return { ...headers };
 }
 
+/**
+ * Open a {@link GeoTIFF} from a URL.
+ *
+ * For anonymous (headerless) requests uses the fast direct
+ * `GeoTIFF.fromUrl` path.  When auth headers are present, constructs
+ * a chunked `SourceHttp` → `SourceCache` → `SourceView` pipeline so
+ * that authentication is threaded through every range request.
+ *
+ * @param url     The COG URL.
+ * @param options Optional request init (auth headers) and chunk/cache
+ *                sizes for the chunked source stack.
+ */
 export async function openGeoTIFF(
   url: string | URL,
   options: GeoTIFFOpenOptions = {},

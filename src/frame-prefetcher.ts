@@ -60,9 +60,12 @@ type PrefetchSnapshot = {
  *
  * ## Scoring
  *
- * ```text
- * priority = 100 - (absDistance * 20) + directionalBoost
- * ```
+ * Tasks are scored via {@link scoreTask} with seven additive factors:
+ * temporal proximity, directional playback boost, buffer shortfall
+ * pressure, interaction-mode override, quality-urgency (preview
+ * upgrade / fresh-preview bonus), log₂ size-hint penalty, and
+ * ETA-based latency penalty.  The final score is clamped to
+ * `[0, 200]`.
  */
 export class FramePrefetcher {
   private tileCache: SequenceTileCache;

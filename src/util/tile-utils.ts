@@ -5,6 +5,11 @@ import { epsgResolver, makeClampedForwardTo3857, metersPerUnit, parseWkt, } from
 import proj4 from "proj4";
 import { geoTiffToDescriptor } from "./geotiff-tileset";
 
+/**
+ * Select the {@link GeoTIFF} or {@link Overview} image for a given
+ * zoom level.  Zoom 0 maps to the coarsest overview; the highest zoom
+ * maps to the full-resolution image.
+ */
 export function imageForZ(
   geotiff: GeoTIFF,
   z: number,
@@ -14,6 +19,10 @@ export function imageForZ(
     : geotiff.overviews[geotiff.overviews.length - 1 - z];
 }
 
+/**
+ * Bounds-check whether tile `(x, y)` exists within the given image's
+ * tile grid.
+ */
 export function hasTile(
   image: Pick<GeoTIFF | Overview, "tileCount">,
   x: number,
@@ -64,6 +73,10 @@ export async function decodeGeoTIFFTile<T>(
   }
 }
 
+/**
+ * Build an {@link AffineTileset} descriptor from an opened {@link GeoTIFF},
+ * resolving CRS / projection transforms and meters-per-unit.
+ */
 // TODO: do we want GeoTIFF registry to do this instead of TimeSequenceTileLayer (inherited from COGLayer)? Then you could handle per-frame reprojection differences instead of assuming they're all the same.
 export async function getGeoTiffDescriptor(geotiff: GeoTIFF) {
   const crs = geotiff.crs;
@@ -133,6 +146,11 @@ export function mapToCoarserZoom(
   };
 }
 
+/**
+ * Predicate: is this error caused by requesting a tile coordinate
+ * that doesn't exist in the COG?  These are expected (edge tiles)
+ * and should be silently ignored.
+ */
 export function isMissingTileError(error: unknown): boolean {
   return error instanceof Error && /^Tile at \(\d+, \d+\) not found$/.test(error.message);
 }

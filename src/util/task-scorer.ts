@@ -41,6 +41,20 @@ export const FALLBACK_WEIGHTS: Required<ScoringWeights> = {
  * isolation without instantiating the full prefetcher.
  */
 
+/**
+ * Compute the composite priority score for a prefetch tile task.
+ *
+ * Combines seven additive factors — temporal proximity, directional
+ * playback boost, buffer shortfall pressure, interaction-mode override,
+ * quality urgency, log₂ size-hint penalty, and ETA-based latency
+ * penalty — into a single score clamped to `[0, 200]`.  Higher scores
+ * are dequeued first.
+ *
+ * @param task          The tile-fetch task to score.
+ * @param distanceIndex Signed frame offset from the target frame.
+ * @param ctx           Telemetry-access callbacks for stateless scoring.
+ * @param scoringWeights Optional per-factor weight overrides.
+ */
 export function scoreTask(
   task: TileTask,
   distanceIndex: number,
@@ -64,6 +78,10 @@ export function scoreTask(
   return Math.max(0, Math.min(200, v + d + b + i + q + s + e));
 }
 
+/**
+ * Temporal proximity component: frames at distance 0 get 3× viewport
+ * salience, distance 1 gets 2×, distance 2 gets 1×, beyond that 0.
+ */
 export function temporalProximityScore(
   absDistance: number,
   weights: Required<ScoringWeights>,
@@ -74,6 +92,10 @@ export function temporalProximityScore(
   return 0;
 }
 
+/**
+ * Directional boost: forward frames receive a bonus, backward frames
+ * a penalty.  Only active during playback.
+ */
 export function directionScore(
   distanceIndex: number,
   ctx: ScoringContext,
@@ -87,6 +109,10 @@ export function directionScore(
   return isForward ? weights.direction : -Math.ceil(weights.direction / 2);
 }
 
+/**
+ * Buffer shortfall: boosts forward-frame priority when the
+ * ahead-of-playhead buffer falls below its target depth.
+ */
 export function bufferShortfallScore(
   distanceIndex: number,
   ctx: ScoringContext,
@@ -102,6 +128,11 @@ export function bufferShortfallScore(
   return shortfall > 0 ? Math.round(weights.bufferShortfall * shortfall) : 0;
 }
 
+/**
+ * Interaction override: during seek / scrub, nearby frames get a
+ * strong boost while distant frames are penalized to avoid wasted
+ * work.
+ */
 export function interactionScore(
   absDistance: number,
   ctx: ScoringContext,
@@ -117,6 +148,11 @@ export function interactionScore(
   return -Math.round(1.2 * weights.interaction);
 }
 
+/**
+ * Quality urgency: full-res tasks get a bonus when upgrading an
+ * existing cached preview; preview tasks get a bonus when current
+ * frame coverage is below 30 %.
+ */
 export function qualityUrgencyScore(
   task: TileTask,
   ctx: ScoringContext,
@@ -142,6 +178,10 @@ export function qualityUrgencyScore(
   return 0;
 }
 
+/**
+ * Size-hint penalty: applies a −log₂(estimatedBytes + 1) penalty
+ * capped at −15 so that frames with large COGs are deprioritised.
+ */
 export function sizeHintPenalty(
   task: TileTask,
   ctx: ScoringContext,
@@ -161,6 +201,11 @@ export function sizeHintPenalty(
   return -Math.min(15, penalty);
 }
 
+/**
+ * ETA penalty: penalises tiles by estimated fetch + transfer time,
+ * derived from the EWMA round-trip time and throughput.  Capped at
+ * −20.
+ */
 export function etaPenalty(
   task: TileTask,
   ctx: ScoringContext,
@@ -186,6 +231,11 @@ export function etaPenalty(
   return -Math.min(20, penalty);
 }
 
+/**
+ * Determine the target quality for a new prefetch task.
+ * Currently always returns `"full"` (progressive preview loading is
+ * deferred).
+ */
 export function qualityForTask(
   mode: InteractionMode,
   _distanceIndex: number,

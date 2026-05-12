@@ -31,11 +31,8 @@ export type TimeSequenceTileLayerProps = {
  * ### `renderLayers()`
  * Replaces the base `RasterTileLayer.renderLayers` to construct the
  * inner `TileLayer` with split `updateTriggers`.
- * `getTileData` is keyed on `currentFrameId` so frame changes trigger
- * `tileset.reloadAll()`.  `all` is keyed on `Math.round(viewport.zoom)`
- * so that zoom changes also flush the tileset cache — without this,
- * tiles from a previous zoom level persist when the user zooms out,
- * producing a frozen ghost raster.
+ * `getTileData` is keyed on the display frame's `id` so frame changes
+ * trigger `tileset.reloadAll()`.
  *
  * ### `_getTileDataCallback()`
  * Uses the exact-tile fetch path supplied by `TimeCOGLayer`. The

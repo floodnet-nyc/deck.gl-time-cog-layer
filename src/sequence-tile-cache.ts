@@ -113,10 +113,11 @@ function tileKey(
  *
  * Entries marked as **protected** (current frame + immediate
  * neighbours) are never evicted.  Among unprotected entries, the
- * policy prefers evicting far-future full-resolution tiles first,
- * then far-past full-resolution tiles, then preview tiles.  This
- * matches the research recommendation: keep close-to-playhead preview
- * tiles and sacrifice distant full-res tiles.
+ * least-recently-accessed tile is selected for eviction, with
+ * full-resolution tiles receiving a 30-second age penalty relative
+ * to preview tiles (making full-res tiles more vulnerable to
+ * eviction).  This keeps close-to-playhead preview tiles available
+ * when memory is tight.
  *
  * Destroying a cache entry calls `texture.destroy()` on the
  * underlying luma.gl `Texture`, releasing GPU memory.
@@ -241,7 +242,9 @@ export class SequenceTileCache {
   /**
    * Store a tile.  If an entry already exists at the same key, the
    * new tile is only stored when it represents a quality upgrade
-   * (preview → full).  The old texture is destroyed.
+   * (preview → full) and the frame is not protected.  When the frame
+   * is protected the existing entry is kept regardless of quality.
+   * The old texture is destroyed on replacement.
    */
   put(
     frameId: string,

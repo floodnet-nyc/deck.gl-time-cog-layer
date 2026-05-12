@@ -22,10 +22,16 @@ const DEFAULT_FORWARD_FRAMES = 6;
  * frames to prefetch tiles for) and by `TimeCOGLayer.updateFrameState`
  * (for cache protection).
  *
+ * When `maxFrameRate` > 0 and `playing` is true, frames are time-bucketed
+ * and only one representative per bucket is scheduled to prevent visual
+ * stutter at sub-frame-rate playback speeds.
+ *
  * @param catalog      Full ordered frame catalog.
- * @param targetIndex  Index of the current display frame in the catalog.
+ * @param targetIndex  Index of the anchor frame (may differ from the
+ *                     display frame under `maxFrameRate` bucketing).
  * @param policy       Buffer window sizes (default 2 backward, 6 forward).
  * @param playbackRate 0 = paused, sign indicates direction.
+ * @param maxFrameRate Maximum display frame rate (0 = unlimited).
  * @param playing      Whether playback is active.
  */
 export function scheduleFrameWindow(

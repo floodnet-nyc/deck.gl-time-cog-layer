@@ -95,12 +95,12 @@ export type TimeCOGLayerProps = COGLayerPassThroughProps & {
  * Internal state for {@link TimeCOGLayer}.
  *
  * The state is intentionally flat so that deck.gl can shallow-diff it
- * efficiently across the render / update cycle.  The three “shared
- * infrastructure” fields — `tileCache`, `prefetcher`, and
- * `visibleTileRef` — are created once in `initializeState` and live
- * for the full lifetime of the layer.  The sublayer
- * (`TimeSequenceTileLayer`) reads from them via props, so they must
- * remain the **same object** across renders.
+ * efficiently across the render / update cycle.  The four "shared
+ * infrastructure" fields — `tileCache`, `geotiffRegistry`,
+ * `prefetcher`, and `visibleTileRef` — are created once in
+ * `initializeState` and live for the full lifetime of the layer.
+ * The sublayer (`TimeSequenceTileLayer`) reads from them via props,
+ * so they must remain the **same object** across renders.
  */
 
 export type TimeCOGLayerState = {
@@ -131,9 +131,6 @@ export type TimeCOGLayerState = {
    */
   prefetcher: FramePrefetcher;
 
-  /**
- 
- 
   /**
    * Shared mutable reference that the inner TileLayer updates via its
    * `onViewportLoad` callback.  The parent layer reads this on each
@@ -194,7 +191,7 @@ const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
  *
  * ## Architecture
  *
- * `TimeCOGLayer` owns three long-lived infrastructure objects that it
+ * `TimeCOGLayer` owns four long-lived infrastructure objects that it
  * injects into a single persistent `TimeSequenceTileLayer` sublayer:
  *
  * 1. **`SequenceTileCache`** — GPU texture cache keyed by
@@ -202,10 +199,14 @@ const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
  *    display frame changes, avoiding the white flash that would occur
  *    if every frame switch destroyed and re-created the tile layer.
  *
- * 2. **`FramePrefetcher`** — Background pipeline that scores and
+ * 2. **`GeoTIFFRegistry`** — Shared GeoTIFF instance cache that
+ *    both the sublayer and prefetcher use to open COG files,
+ *    eliminating redundant header fetches.
+ *
+ * 3. **`FramePrefetcher`** — Background pipeline that scores and
  *    fetches tiles for nearby frames before they are needed.
  *
- * 3. **`visibleTileRef`** — Shared mutable state that the inner
+ * 4. **`visibleTileRef`** — Shared mutable state that the inner
  *    `TileLayer` updates whenever the visible tile set changes;
  *    used to feed the prefetcher with the correct tile coordinates.
  *
@@ -231,10 +232,10 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   declare state: CompositeLayer["state"] & TimeCOGLayerState;
 
   /**
-   * Creates the three shared infrastructure objects — `tileCache`,
-   * `prefetcher`, and `visibleTileRef` — that live for the full
-   * lifetime of the layer and are injected into the persistent
-   * sublayer on every render.
+   * Creates the four shared infrastructure objects — `tileCache`,
+   * `geotiffRegistry`, `prefetcher`, and `visibleTileRef` — that
+   * live for the full lifetime of the layer and are injected into
+   * the persistent sublayer on every render.
    */
   initializeState(): void {
     const props = this.props;
@@ -306,8 +307,9 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
    * The sublayer's `id` is **constant** (`${this.props.id}-tiles`)
    * so that deck.gl reuses the same layer instance across frame
    * switches rather than destroying / recreating it.  Frame changes
-   * are communicated through the `currentFrameId` and
-   * `currentFrameUrl` props.
+   * propagate through `getTileData` in `updateTriggers`, keyed on
+   * the current display frame's `id`, which triggers
+   * `tileset.reloadAll()` without discarding already-loaded tiles.
    *
    * The `geotiff` prop is set to the very first frame's URL and
    * never changes.  This ensures `COGLayer` computes the shared
@@ -473,7 +475,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   }
 
   /**
-   * Aborts all in-flight prefetch tasks and destroys GPU textures.
+   * Aborts all in-flight prefetch tasks, clears the full-res upgrade
+   * timer, and destroys GPU textures.
    */
   finalizeState(): void {
     const state = this.state;
