@@ -104,10 +104,13 @@ export class GeoTIFFRegistry {
     },
   ): Promise<T | null> {
     const geotiff = await this.open(id, url, options.requestInit);
-    return decodeGeoTIFFTile(geotiff, x, y, z, getTileData, {
+    return decodeGeoTIFFTile({
+      geotiff, x, y, z, getTileData, 
+      options: {
       device: options.device,
       signal: options.signal,
       pool: options.pool,
+    }
     });
   }
 }

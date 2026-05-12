@@ -39,17 +39,24 @@ export function hasTile(
  * checking, the user-decode call, and missing-tile error handling so
  * the two callers cannot drift.
  */
-export async function decodeGeoTIFFTile<T>(
-  geotiff: GeoTIFF,
-  x: number,
-  y: number,
-  z: number,
-  decodeFn: (
+export async function decodeGeoTIFFTile<T>({
+  geotiff,
+  x,
+  y,
+  z,
+  getTileData,
+  options,
+}: {
+  geotiff: GeoTIFF;
+  x: number;
+  y: number;
+  z: number;
+  getTileData: (
     image: GeoTIFF | Overview,
     options: { device: Device; x: number; y: number; signal?: AbortSignal; pool: DecoderPool },
-  ) => Promise<T>,
-  options: { device: Device; signal?: AbortSignal; pool?: DecoderPool | null },
-): Promise<T | null> {
+  ) => Promise<T>;
+  options: { device: Device; signal?: AbortSignal; pool?: DecoderPool | null; requestInit?: RequestInit };
+}): Promise<T | null> {
   const image = imageForZ(geotiff, z);
 
   if (!image || !hasTile(image, x, y)) {
@@ -57,7 +64,7 @@ export async function decodeGeoTIFFTile<T>(
   }
 
   try {
-    return await decodeFn(image, {
+    return await getTileData(image, {
       device: options.device,
       x,
       y,
