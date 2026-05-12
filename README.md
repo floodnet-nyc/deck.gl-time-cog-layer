@@ -3,7 +3,7 @@
 A [deck.gl](https://deck.gl) `CompositeLayer` for smooth playback of time-indexed Cloud-Optimized GeoTIFF (COG) sequences. Designed for weather radar, satellite imagery, and other regularly-sampled raster time series, building upon [@developmentseed/deck.gl-raster](https://developmentseed.org/deck.gl-raster).
 
 ```bash
-npm install deck.gl-time-cog-layer
+npm install @floodnet/deck.gl-time-cog-layer
 ```
 
 ![Demo](./public/timecoglayer.webp)
