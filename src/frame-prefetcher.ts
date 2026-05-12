@@ -98,6 +98,14 @@ export class FramePrefetcher {
   /** Shared registry injected by the coordinator.  Preferred when set. */
   private sharedRegistry: GeoTIFFRegistry | null = null;
 
+  /**
+   * Tile keys known to not exist in their source COG (out-of-bounds
+   * `(frameId, x, y, z)` tuples).  Prevents the prefetcher from
+   * infinitely re-requesting tiles that `decodeGeoTIFFTile` returns
+   * `null` for.
+   */
+  private missingTileKeys = new Set<string>();
+
   constructor(
     tileCache: SequenceTileCache,
     maxConcurrent = 4,
@@ -131,6 +139,11 @@ export class FramePrefetcher {
   /** @internal Exposed for test pre-population (`prefetcher.geotiffs.set(...)`). */
   get geotiffs(): Map<string, GeoTIFF> {
     return (this.sharedRegistry ?? this.internalRegistry).mutableMap;
+  }
+
+  /** @internal Exposed for test verification of the negative tile cache. */
+  get missingKeys(): ReadonlySet<string> {
+    return this.missingTileKeys;
   }
 
   update(snapshot: PrefetchSnapshot): void {
@@ -213,6 +226,10 @@ export class FramePrefetcher {
           continue;
         }
 
+        if (this.missingTileKeys.has(key)) {
+          continue;
+        }
+
         if (this.taskQueue.isTracked(key)) {
           continue;
         }
@@ -247,6 +264,7 @@ export class FramePrefetcher {
 
   abortAll(): void {
     this.taskQueue.abortAll();
+    this.missingTileKeys.clear();
   }
 
   destroy(): void {
@@ -339,6 +357,7 @@ export class FramePrefetcher {
       );
 
       if (!result) {
+        this.missingTileKeys.add(key);
         return;
       }
 

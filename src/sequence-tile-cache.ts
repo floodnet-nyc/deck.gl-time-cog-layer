@@ -82,8 +82,6 @@ export type TileCachePolicy = {
   /** Maximum number of distinct frames allowed in the cache.  Evicts the least-recently-accessed frame first. */
   maxFrames?: number;
   /** Maximum number of individual tile entries across all frames. */
-  maxTileEntries?: number;
-  /** Maximum total tile count (alias / complement to `maxTileEntries`). */
   maxTiles?: number;
 };
 
@@ -457,7 +455,7 @@ export class SequenceTileCache {
   }
 
   private evictByTileCount(): void {
-    const maxTiles = this.policy.maxTiles ?? this.policy.maxTileEntries;
+    const maxTiles = this.policy.maxTiles;
 
     if (!maxTiles || maxTiles < 1) {
       return;

@@ -295,11 +295,14 @@ function render(): void {
     },
     bufferPolicy: {
       backwardFrames: 0,
-      forwardFrames: 6,
+      forwardFrames: 8,
     },
-    cachePolicy: {
-      maxFrames: 120,
+    schedulerPolicy: {
+      maxNetworkRequests: 8,
     },
+    // cachePolicy: {
+    //   maxFrames: 120,
+    // },
     onStats: (stats) => {
       const wastedKb = Math.round(stats.prefetchedWastedBytes / 1024);
       const useRate = Math.round(stats.prefetchedUseRate * 100);

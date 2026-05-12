@@ -52,7 +52,7 @@ const COLORS = {
 const MIN_COL_WIDTH = 6;
 const MIN_BAND_HEIGHT = 28;
 const BAND_GAP = 16;
-const FOOTER_LINES = 3;
+const FOOTER_LINES = 4;
 const FOOTER_LINE_HEIGHT = 12;
 const DETAIL_HEIGHT = 42;
 const DETAIL_GAP = 8;
@@ -822,5 +822,11 @@ function renderFooter(
     `unused resident: ${state.prefetchedUnusedResidentCount} (${unusedKb} kB) | wasted: ${wastedKb} kB | aborted: ${state.abortedTasks}`,
     marginLeft,
     height - 28 * dpr,
+  );
+
+  ctx.fillText(
+    `in-flight: ${state.inFlightKeys.size}`,
+    marginLeft,
+    height - 40 * dpr,
   );
 }

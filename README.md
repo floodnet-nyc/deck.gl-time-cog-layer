@@ -92,7 +92,7 @@ color = vec4(ramp, alpha);
 | `maxFrameRate` | `number` | `0` | Maximum display frame rate during playback (0 = unlimited) |
 | `missingFramePolicy` | `"hold-last" \| "nearest" \| "skip" \| "transparent"` | `"hold-last"` | How to resolve a time between catalog entries |
 | `bufferPolicy` | `object` | `{ backwardFrames: 2, forwardFrames: 6 }` | How many frames to prefetch ahead / retain behind |
-| `cachePolicy` | `object` | `{}` | Tile cache limits — `memoryBytes`, `maxFrames`, `maxTileEntries`, `maxTiles` |
+| `cachePolicy` | `object` | `{}` | Tile cache limits — `memoryBytes`, `maxFrames`, `maxTiles` |
 | `qualityPolicy` | `object` | `{}` | Progressive loading behaviour — `lowResFirst`, `previewOverviewBias`, `scrubOverviewBias`, `fullResUpgradeIdleMs` |
 | `schedulerPolicy` | `object` | `{ maxNetworkRequests: 4 }` | Prefetch concurrency (`maxNetworkRequests`, `maxDecodeTasks`, `maxGpuUploadsPerFrame`) and optional scoring weights |
 | `descriptorMode` | `"reuse-first" \| "manifest"` | `"reuse-first"` | How the shared tileset descriptor is determined |
@@ -163,8 +163,7 @@ type TimeCOGBufferPolicy = {
 type TimeCOGCachePolicy = {
   memoryBytes?: number;     // max total GPU bytes
   maxFrames?: number;       // max distinct frames in cache
-  maxTileEntries?: number;  // max individual tile entries
-  maxTiles?: number;        // alias for maxTileEntries
+  maxTiles?: number;  // max individual tile entries
 };
 ```
 
