@@ -15,7 +15,7 @@ import "./style.css";
 
 const DISPLAY_OPACITY = 0.86;
 const PRECIP_MAX_RAW_VALUE = 200;
-const PLAY_SPEEDS = [0.5, 1, 2, 5, 10, 30, 60, 120].map((s) => s * 60);
+const PLAY_SPEEDS = [0.5, 1, 2, 5, 10, 30, 45, 60, 120].map((s) => s * 60);
 const DEFAULT_SPEED = 30 * 60;
 
 
@@ -289,13 +289,13 @@ function render(): void {
     renderTile: renderPrecipTile,
     opacity: DISPLAY_OPACITY,
     missingFramePolicy: "nearest",
-    maxFrameRate: 15,
+    maxFrameRate: 30,
     qualityPolicy: {
       lowResFirst: false,
     },
     bufferPolicy: {
-      backwardFrames: 1,
-      forwardFrames: 3,
+      backwardFrames: 0,
+      forwardFrames: 6,
     },
     cachePolicy: {
       maxFrames: 120,
