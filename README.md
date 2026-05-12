@@ -6,7 +6,7 @@ A [deck.gl](https://deck.gl) `CompositeLayer` for smooth playback of time-indexe
 npm install @floodnet/deck.gl-time-cog-layer
 ```
 
-![Demo](./public/timecoglayer.webp)
+![Demo](https://raw.githubusercontent.com/floodnet-nyc/deck.gl-time-cog-layer/main/public/timecoglayer.webp)
 
 ---
 
@@ -14,7 +14,7 @@ npm install @floodnet/deck.gl-time-cog-layer
 
 ```ts
 import { Deck } from "@deck.gl/core";
-import { TimeCOGLayer } from "deck.gl-time-cog-layer";
+import { TimeCOGLayer } from "@floodnet/deck.gl-time-cog-layer";
 
 const deck = new Deck({
   layers: [
