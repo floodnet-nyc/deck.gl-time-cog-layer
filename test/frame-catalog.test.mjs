@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   FramePrefetcher,
-  GeoTIFFRegistry,
   SequenceTileCache,
   canonicalizeUrl,
   findNearestFrameIndex,
@@ -310,7 +309,7 @@ test("frame prefetcher suppresses expected missing COG tile warnings", async () 
   assert.deepEqual(warnings, []);
 });
 
-test("frame prefetcher keeps preview requests on the exact tile grid", async () => {
+test("frame prefetcher keeps full requests on the exact tile grid", async () => {
   const cache = new SequenceTileCache();
   const prefetcher = new FramePrefetcher(cache, 1);
   const targetFrame = {
@@ -394,26 +393,11 @@ test("mapToCoarserZoom returns identity at bias 0", () => {
   assert.deepEqual(mapToCoarserZoom(5, 5, 5, 0), { x: 5, y: 5, z: 5 });
 });
 
-test("time sequence tile layer keeps preview requests on the exact tile grid", async () => {
-  const cache = new SequenceTileCache();
-  const registry = new GeoTIFFRegistry();
-  const coarse = { id: "coarse", tileCount: { x: 4, y: 4 } };
-  const geotiff = {
-    overviews: [coarse],
-    tileCount: { x: 8, y: 8 },
-  };
-  registry.unsafelySet("frame-1", geotiff);
+test("time sequence tile layer delegates getTileData to user prop", async () => {
   const requests = [];
 
   const layer = Object.create(TimeSequenceTileLayer.prototype);
   layer.props = {
-    sequenceTileCache: cache,
-    currentFrameId: "frame-1",
-    currentFrameUrl: "https://example.test/frame-1.tif",
-    previewBias: 1,
-    visibleTileRef: { tiles: [] },
-    pool: {},
-    geotiffRegistry: registry,
     getTileData: async (image, options) => {
       requests.push({
         imageId: image.id,
@@ -430,11 +414,11 @@ test("time sequence tile layer keeps preview requests on the exact tile grid", a
     },
   };
   layer.state = {};
-  layer.context = {
-    device: {},
-  };
 
   const getTileData = TimeSequenceTileLayer.prototype._getTileDataCallback.call(layer);
+  assert.ok(typeof getTileData === "function", "_getTileDataCallback should return a function");
+  assert.notEqual(getTileData, undefined, "_getTileDataCallback should not return undefined when getTileData is set");
+
   const result = await getTileData(
     { index: { x: 4, y: 6, z: 1 } },
     { device: {}, signal: undefined },
@@ -442,10 +426,15 @@ test("time sequence tile layer keeps preview requests on the exact tile grid", a
 
   assert.deepEqual(requests, [{ imageId: undefined, x: 4, y: 6 }]);
   assert.equal(result.rasterValue, 4006);
+});
 
-  const cached = cache.get("frame-1", 4, 6, 1);
-  assert.ok(cached);
-  assert.equal(cached.quality, "full");
+test("time sequence tile layer _getTileDataCallback returns undefined when getTileData is not set", () => {
+  const layer = Object.create(TimeSequenceTileLayer.prototype);
+  layer.props = {};
+  layer.state = {};
+
+  const getTileData = TimeSequenceTileLayer.prototype._getTileDataCallback.call(layer);
+  assert.equal(getTileData, undefined);
 });
 
 test("SequenceTileCache.getBest returns exact match on first try", () => {
@@ -564,7 +553,7 @@ test("SequenceTileCache does not downgrade full to preview on put", () => {
   assert.equal(result.byteLength, 2);
 });
 
-test("frame prefetcher creates preview tasks at biased zoom during seeking", () => {
+test("frame prefetcher creates full tasks on visible tile grid during seeking", () => {
   const cache = new SequenceTileCache();
   const prefetcher = new FramePrefetcher(cache, 0);
 
@@ -599,13 +588,13 @@ test("frame prefetcher creates preview tasks at biased zoom during seeking", () 
   });
 
   assert.equal(prefetcher.queue.length, 1);
-  assert.equal(prefetcher.queue[0].quality, "preview");
+  assert.equal(prefetcher.queue[0].quality, "full");
   assert.equal(prefetcher.queue[0].x, 4);
   assert.equal(prefetcher.queue[0].y, 2);
   assert.equal(prefetcher.queue[0].z, 3);
 });
 
-test("frame prefetcher creates preview tasks at coarser bias during scrubbing", () => {
+test("frame prefetcher creates full tasks on visible tile grid during scrubbing", () => {
   const cache = new SequenceTileCache();
   const prefetcher = new FramePrefetcher(cache, 0);
 
@@ -640,13 +629,13 @@ test("frame prefetcher creates preview tasks at coarser bias during scrubbing", 
   });
 
   assert.equal(prefetcher.queue.length, 1);
-  assert.equal(prefetcher.queue[0].quality, "preview");
+  assert.equal(prefetcher.queue[0].quality, "full");
   assert.equal(prefetcher.queue[0].x, 8);
   assert.equal(prefetcher.queue[0].y, 4);
   assert.equal(prefetcher.queue[0].z, 4);
 });
 
-test("frame prefetcher creates preview tasks at biased zoom during playing for nearby frames", () => {
+test("frame prefetcher creates full tasks on visible tile grid during playing", () => {
   const cache = new SequenceTileCache();
   const prefetcher = new FramePrefetcher(cache, 0);
 
@@ -681,13 +670,13 @@ test("frame prefetcher creates preview tasks at biased zoom during playing for n
   });
 
   assert.equal(prefetcher.queue.length, 1);
-  assert.equal(prefetcher.queue[0].quality, "preview");
+  assert.equal(prefetcher.queue[0].quality, "full");
   assert.equal(prefetcher.queue[0].x, 4);
   assert.equal(prefetcher.queue[0].y, 2);
   assert.equal(prefetcher.queue[0].z, 3);
 });
 
-test("frame prefetcher in idle mode creates upgrade tasks for preview-only tiles", () => {
+test("frame prefetcher in idle mode skips tiles already cached (even previews)", () => {
   const cache = new SequenceTileCache();
   const prefetcher = new FramePrefetcher(cache, 0);
 
@@ -732,12 +721,7 @@ test("frame prefetcher in idle mode creates upgrade tasks for preview-only tiles
     qualityPolicy: {},
   });
 
-  assert.equal(prefetcher.queue.length, 1);
-  assert.equal(prefetcher.queue[0].quality, "full");
-  assert.equal(prefetcher.queue[0].x, 4);
-  assert.equal(prefetcher.queue[0].y, 2);
-  assert.equal(prefetcher.queue[0].z, 3);
-  assert.ok(prefetcher.queue[0].priority >= 100, "upgrade priority should be high");
+  assert.equal(prefetcher.queue.length, 0, "prefetcher should skip tiles already in cache");
 });
 
 test("frame prefetcher in idle mode skips upgrade when full tile already cached", () => {
@@ -1136,11 +1120,11 @@ test("scoring: upgrade tasks outrank fresh full tasks", () => {
   });
 
   const upgradeTask = prefetcher.queue.find((t) => t.frameId === "A" && t.quality === "full");
-  const freshTask = prefetcher.queue.find((t) => t.frameId === "B" && t.quality === "preview");
+  const freshTask = prefetcher.queue.find((t) => t.frameId === "B" && t.quality === "full");
 
   assert.ok(upgradeTask, "should have upgrade task for frame A");
-  assert.ok(freshTask, "should have fresh task for frame B");
-  assert.ok(upgradeTask.priority > freshTask.priority, "upgrade should outrank fresh preview");
+  assert.ok(freshTask, "should have fresh full task for frame B");
+  assert.ok(upgradeTask.priority > freshTask.priority, "upgrade should outrank fresh full");
 });
 
 test("scoring: idle mode preview tasks get slight boost", () => {
@@ -1663,12 +1647,12 @@ test("scoring: quality urgency gives highest bonus to preview-to-full upgrade", 
   });
 
   const upgradeTask = prefetcher.queue.find((t) => t.frameId === "A" && t.quality === "full");
-  const freshTask = prefetcher.queue.find((t) => t.frameId === "B" && t.quality === "preview");
+  const freshTask = prefetcher.queue.find((t) => t.frameId === "B" && t.quality === "full");
 
   assert.ok(upgradeTask, "should have upgrade task for frame A");
-  assert.ok(freshTask, "should have fresh task for frame B");
+  assert.ok(freshTask, "should have fresh full task for frame B");
   assert.ok(upgradeTask.priority > freshTask.priority + 20,
-    "upgrade should significantly outrank fresh preview");
+    "upgrade should significantly outrank fresh full");
 });
 
 test("scoring: quality urgency boosts fresh preview when coverage is below 30%", () => {
