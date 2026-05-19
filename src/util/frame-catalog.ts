@@ -1,3 +1,4 @@
+import type { AccessorContext } from "@deck.gl/core";
 import type {
   MissingFramePolicy,
   NormalizedTimeCOGFrame,
@@ -53,27 +54,29 @@ export function parseTimeValue(value: TimeValue): number {
  */
 export function normalizeFrameCatalog<TFrame = TimeCOGFrame>(
   frames: readonly TFrame[],
-  getTime?: (frame: TFrame) => TimeValue,
-  getUrl?: (frame: TFrame) => string | URL,
+  getTime?: (frame: TFrame, context: AccessorContext<TFrame>) => TimeValue,
+  getUrl?: (frame: TFrame, context: AccessorContext<TFrame>) => string | URL,
 ): NormalizedTimeCOGFrame[] {
   const byIdOrTime = new Map<string, NormalizedTimeCOGFrame>();
+  getTime ??= (frame, _) => (frame as unknown as TimeCOGFrame).time;
+  getUrl ??= (frame, _) => (frame as unknown as TimeCOGFrame).url;
 
-  frames.forEach((frame, sourceIndex) => {
-    const rawTime = getTime ? getTime(frame) : (frame as unknown as TimeCOGFrame).time;
+  frames.forEach((frame, index) => {
+    const context: AccessorContext<TFrame> = { index, data: frames, target: [] };
+    const rawTime = getTime(frame, context);
     const timeMs = parseTimeValue(rawTime);
-    const url = String(getUrl ? getUrl(frame) : (frame as unknown as TimeCOGFrame).url);
+    const url = String(getUrl(frame, context));
     const baseFrame = frame as unknown as Partial<TimeCOGFrame>;
     const id = baseFrame.id ?? `${timeMs}:${canonicalizeUrl(url)}`;
     const cacheKey = baseFrame.id ?? canonicalizeUrl(url);
 
     byIdOrTime.set(id, {
-      ...(typeof frame === "object" && frame !== null ? (frame as object) : {}),
       time: rawTime,
       id,
       timeMs,
       url,
       cacheKey,
-      sourceIndex,
+      sourceIndex: index,
     } as NormalizedTimeCOGFrame);
   });
 

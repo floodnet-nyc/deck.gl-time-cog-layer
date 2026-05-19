@@ -1,4 +1,5 @@
 import type {
+  AccessorContext,
   Layer,
   LayersList,
   UpdateParameters,
@@ -57,13 +58,13 @@ export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps 
    * When omitted, each item is expected to have a `.time` field
    * compatible with {@link TimeCOGFrame}.
    */
-  getTime?: (frame: TFrame) => TimeValue;
+  getTime?: (frame: TFrame, context?: AccessorContext<TFrame>) => TimeValue;
   /**
    * Accessor that extracts the COG URL from a frame item.
    * When omitted, each item is expected to have a `.url` field
    * compatible with {@link TimeCOGFrame}.
    */
-  getUrl?: (frame: TFrame) => string | URL;
+  getUrl?: (frame: TFrame, context?: AccessorContext<TFrame>) => string | URL;
   /** Current playback time (epoch ms, ISO string, or Date). */
   currentTime: TimeValue;
   /** Whether playback is active. */
