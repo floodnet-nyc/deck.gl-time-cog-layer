@@ -71,6 +71,7 @@ export function normalizeFrameCatalog<TFrame = TimeCOGFrame>(
     const cacheKey = baseFrame.id ?? canonicalizeUrl(url);
 
     byIdOrTime.set(id, {
+      ...(typeof frame === "object" && frame !== null ? frame : {}),
       time: rawTime,
       id,
       timeMs,
