@@ -49,9 +49,21 @@ import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
  * adds the temporal orchestration knobs.
  */
 
-export type TimeCOGLayerProps = COGLayerPassThroughProps & {
+export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps & {
   /** Ordered list of time → COG URL entries. */
-  frames: TimeCOGFrame[];
+  frames: readonly TFrame[];
+  /**
+   * Accessor that extracts the timestamp from a frame item.
+   * When omitted, each item is expected to have a `.time` field
+   * compatible with {@link TimeCOGFrame}.
+   */
+  getTime?: (frame: TFrame) => TimeValue;
+  /**
+   * Accessor that extracts the COG URL from a frame item.
+   * When omitted, each item is expected to have a `.url` field
+   * compatible with {@link TimeCOGFrame}.
+   */
+  getUrl?: (frame: TFrame) => string | URL;
   /** Current playback time (epoch ms, ISO string, or Date). */
   currentTime: TimeValue;
   /** Whether playback is active. */
@@ -227,10 +239,11 @@ const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
  * keeps old tile content visible **until** new data is ready — giving
  * a flicker-free transition.
  */
-export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
+
+export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGLayerProps<TFrame>> {
   static layerName = "TimeCOGLayer";
 
-  declare state: CompositeLayer["state"] & TimeCOGLayerState;
+  declare state: CompositeLayer<TimeCOGLayerProps<TFrame>>["state"] & TimeCOGLayerState;
 
   /**
    * Creates the four shared infrastructure objects — `tileCache`,
@@ -271,7 +284,10 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
   updateState(params: UpdateParameters<this>): void {
     const { props, oldProps } = params;
     const state = this.state;
-    const framesChanged = props.frames !== oldProps.frames;
+    const { updateTriggersChanged } = params.changeFlags;
+    const framesChanged =
+      props.frames !== oldProps.frames ||
+      !!(updateTriggersChanged && (updateTriggersChanged.getTime || updateTriggersChanged.getUrl));
     const cachePolicyChanged = props.cachePolicy !== oldProps.cachePolicy;
     const timeChanged = props.currentTime !== oldProps.currentTime;
     const timingChanged =
@@ -286,7 +302,7 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     }
 
     const catalog = framesChanged
-      ? normalizeFrameCatalog(props.frames)
+      ? normalizeFrameCatalog(props.frames, props.getTime, props.getUrl)
       : state.catalog;
 
     if (framesChanged) {
@@ -331,6 +347,8 @@ export class TimeCOGLayer extends CompositeLayer<TimeCOGLayerProps> {
     const {
       id,
       frames,
+      getTime,
+      getUrl,
       currentTime,
       playing,
       playbackRate,

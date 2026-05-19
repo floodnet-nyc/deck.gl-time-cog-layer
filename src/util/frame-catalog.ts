@@ -51,25 +51,30 @@ export function parseTimeValue(value: TimeValue): number {
  * Deduplicate, sort, and canonically normalise the raw frame list.
  * Duplicate IDs win the last-declared URL.
  */
-export function normalizeFrameCatalog(
-  frames: readonly TimeCOGFrame[],
+export function normalizeFrameCatalog<TFrame = TimeCOGFrame>(
+  frames: readonly TFrame[],
+  getTime?: (frame: TFrame) => TimeValue,
+  getUrl?: (frame: TFrame) => string | URL,
 ): NormalizedTimeCOGFrame[] {
   const byIdOrTime = new Map<string, NormalizedTimeCOGFrame>();
 
   frames.forEach((frame, sourceIndex) => {
-    const timeMs = parseTimeValue(frame.time);
-    const url = String(frame.url);
-    const id = frame.id ?? `${timeMs}:${canonicalizeUrl(url)}`;
-    const cacheKey = frame.id ?? canonicalizeUrl(url);
+    const rawTime = getTime ? getTime(frame) : (frame as unknown as TimeCOGFrame).time;
+    const timeMs = parseTimeValue(rawTime);
+    const url = String(getUrl ? getUrl(frame) : (frame as unknown as TimeCOGFrame).url);
+    const baseFrame = frame as unknown as Partial<TimeCOGFrame>;
+    const id = baseFrame.id ?? `${timeMs}:${canonicalizeUrl(url)}`;
+    const cacheKey = baseFrame.id ?? canonicalizeUrl(url);
 
     byIdOrTime.set(id, {
-      ...frame,
+      ...(typeof frame === "object" && frame !== null ? (frame as object) : {}),
+      time: rawTime,
       id,
       timeMs,
       url,
       cacheKey,
       sourceIndex,
-    });
+    } as NormalizedTimeCOGFrame);
   });
 
   return [...byIdOrTime.values()].sort((a, b) => {
