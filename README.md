@@ -79,13 +79,44 @@ color = vec4(ramp, alpha);
 
 `getTileData` and `renderTile` follow the same signatures as [`@developmentseed/deck.gl-geotiff`](https://developmentseed.org/deck.gl-raster/api/geotiff/)'s `COGLayer`. Any existing COG render pipeline works unchanged.
 
+### Customizing frame data access
+
+If your data is in a different shape (e.g. a GeoJSON feature collection or API response), use `getTime` and `getUrl` accessors to extract the timestamp and COG URL:
+
+```ts
+type Feature = { properties: { timestamp: string; cog_url: string } };
+
+const features: Feature[] = await fetchCatalog();
+
+new TimeCOGLayer({
+  frames: features,
+  getTime: (f) => f.properties.timestamp,
+  getUrl:  (f) => f.properties.cog_url,
+  currentTime: Date.now(),
+  // ...
+});
+```
+
+All other fields on each item (e.g. `id`, `meta`, `byteSizeHint`) are still picked up automatically if they exist.
+
+If `getTime` or `getUrl` depend on reactive state, signal that through `updateTriggers` so the catalog is re-normalized when they change:
+
+```ts
+updateTriggers: {
+  getTime: [dependency],
+  getUrl:  [dependency],
+}
+```
+
 ---
 
 ## Props
 
 | Prop | Type | Default | Description |
 |---|---|---|---|
-| `frames` | `TimeCOGFrame[]` | — | Ordered list of time → COG URL entries |
+| `frames` | `TFrame[]` | — | Ordered list of frame entries (any shape when `getTime`/`getUrl` are provided) |
+| `getTime` | `(frame: TFrame) => number \| string \| Date` | — | Extracts the timestamp from each frame item; falls back to `frame.time` when omitted |
+| `getUrl` | `(frame: TFrame) => string \| URL` | — | Extracts the COG URL from each frame item; falls back to `frame.url` when omitted |
 | `currentTime` | `number \| string \| Date` | — | Current playback time (epoch ms, ISO-8601, or Date) |
 | `playing` | `boolean` | `false` | Whether playback is active |
 | `playbackRate` | `number` | `0` | Speed multiplier (e.g. `60` = 1 minute of data per real second) |

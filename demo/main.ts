@@ -8,7 +8,7 @@ import type { RasterModule } from "@developmentseed/deck.gl-raster/gpu-modules";
 import { CreateTexture, MaskTexture } from "@developmentseed/deck.gl-raster/gpu-modules";
 import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
 import type { Texture } from "@luma.gl/core";
-import type { NormalizedTimeCOGFrame, TimeCOGFrame } from "../src/index.js";
+import type { NormalizedTimeCOGFrame } from "../src/index.js";
 import { TimeCOGLayer, findNearestFrameIndex, normalizeFrameCatalog } from "../src/index.js";
 import { renderTileDiagnostics } from "../src/util/tile-diagnostics.js";
 import "./style.css";
@@ -222,15 +222,13 @@ const index = await fetch("/precip_cog_index.json").then((response) => {
   return response.json() as Promise<PrecipIndex>;
 });
 
-const frames: TimeCOGFrame[] = index.features.map((feature) => {
-  const sourceUrl = new URL(feature.properties.url);
+type PrecipFeature = (typeof index.features)[number];
 
-  return {
-    time: feature.properties.time,
-    url: `/cogs/${sourceUrl.pathname.split("/").at(-1)}`,
-  };
-});
-const catalog = normalizeFrameCatalog(frames);
+const getTime = (f: PrecipFeature) => f.properties.time;
+const getUrl  = (f: PrecipFeature) => `/cogs/${new URL(f.properties.url).pathname.split("/").at(-1)}`;
+
+const { features } = index;
+const catalog = normalizeFrameCatalog(features, getTime, getUrl);
 let selectedFrame = catalog[0] as NormalizedTimeCOGFrame | undefined;
 
 frameInput.max = String(Math.max(0, catalog.length - 1));
@@ -254,7 +252,7 @@ const deck = new Deck({
   layers: [],
 });
 
-let timeLayer: TimeCOGLayer | null = null;
+let timeLayer: TimeCOGLayer<PrecipFeature> | null = null;
 
 function renderDiagnostics(): void {
   if (!timeLayer || !diagnosticsCanvas) {
@@ -281,7 +279,9 @@ function render(): void {
 
   timeLayer = new TimeCOGLayer({
     id: "time-cog-layer-demo",
-    frames,
+    frames: features,
+    getTime,
+    getUrl,
     currentTime: selectedFrame.timeMs,
     playing,
     playbackRate,
