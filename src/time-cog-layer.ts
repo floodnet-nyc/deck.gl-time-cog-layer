@@ -53,6 +53,8 @@ import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
 
 export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps & {
   /** Ordered list of time → COG URL entries. */
+  data?: readonly TFrame[];
+  // DEPRECATED frames prop, will be removed in v0.3.0 in favor of `data`
   frames: readonly TFrame[];
   /**
    * Accessor that extracts the timestamp from a frame item.
@@ -304,7 +306,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     }
 
     const catalog = framesChanged
-      ? normalizeFrameCatalog(props.frames, props.getTime, props.getUrl)
+      ? normalizeFrameCatalog(props.data || props.frames, props.getTime, props.getUrl)
       : state.catalog;
 
     if (framesChanged) {
