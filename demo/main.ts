@@ -279,7 +279,7 @@ function render(): void {
 
   timeLayer = new TimeCOGLayer({
     id: "time-cog-layer-demo",
-    frames: features,
+    data: features,
     getTime,
     getUrl,
     currentTime: selectedFrame.timeMs,

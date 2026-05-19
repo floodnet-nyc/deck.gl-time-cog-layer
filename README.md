@@ -20,7 +20,7 @@ const deck = new Deck({
   layers: [
     new TimeCOGLayer({
       id: "precip",
-      frames: [
+      data: [
         { time: "2025-10-30T00:00:00Z", url: "/cogs/000.tif" },
         { time: "2025-10-30T00:02:00Z", url: "/cogs/002.tif" },
         { time: "2025-10-30T00:04:00Z", url: "/cogs/004.tif" },
@@ -89,7 +89,7 @@ type Feature = { properties: { timestamp: string; cog_url: string } };
 const features: Feature[] = await fetchCatalog();
 
 new TimeCOGLayer({
-  frames: features,
+  data: features,
   getTime: (f) => f.properties.timestamp,
   getUrl:  (f) => f.properties.cog_url,
   currentTime: Date.now(),
@@ -114,7 +114,7 @@ updateTriggers: {
 
 | Prop | Type | Default | Description |
 |---|---|---|---|
-| `frames` | `TFrame[]` | — | Ordered list of frame entries (any shape when `getTime`/`getUrl` are provided) |
+| `data` | `TFrame[]` | — | Ordered list of frame entries (any shape when `getTime`/`getUrl` are provided) |
 | `getTime` | `(frame: TFrame) => number \| string \| Date` | — | Extracts the timestamp from each frame item; falls back to `frame.time` when omitted |
 | `getUrl` | `(frame: TFrame) => string \| URL` | — | Extracts the COG URL from each frame item; falls back to `frame.url` when omitted |
 | `currentTime` | `number \| string \| Date` | — | Current playback time (epoch ms, ISO-8601, or Date) |
