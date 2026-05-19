@@ -3,7 +3,7 @@ import type { GeoTIFF, Overview, DecoderPool } from "@developmentseed/geotiff";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
 import { epsgResolver, makeClampedForwardTo3857, metersPerUnit, parseWkt, } from "@developmentseed/proj";
 import proj4 from "proj4";
-import { geoTiffToDescriptor } from "./geotiff-tileset";
+import { geoTiffToDescriptor } from "./geotiff-tileset.js";
 
 /**
  * Select the GeoTIFF or Overview image for a given zoom level.
