@@ -1,6 +1,6 @@
 {
   "name": "@floodnet/deck.gl-time-cog-layer",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "type": "module",
   "description": "A deck.gl CompositeLayer for time-indexed Cloud-Optimized GeoTIFF playback.",
   "main": "./dist/index.js",
