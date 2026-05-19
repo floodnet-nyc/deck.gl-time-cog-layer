@@ -13,6 +13,7 @@ import {
   normalizeFrameCatalog,
   parseTimeValue,
   resolveFrameForTime,
+  type Catalog,
 } from "./util/frame-catalog.js";
 import { FramePrefetcher } from "./frame-prefetcher.js";
 import { scheduleFrameWindow, applyMaxFrameRateBucking } from "./util/frame-scheduler.js";
@@ -58,13 +59,13 @@ export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps 
    * When omitted, each item is expected to have a `.time` field
    * compatible with {@link TimeCOGFrame}.
    */
-  getTime?: (frame: TFrame, context?: AccessorContext<TFrame>) => TimeValue;
+  getTime?: (frame: TFrame, context: AccessorContext<TFrame>) => TimeValue;
   /**
    * Accessor that extracts the COG URL from a frame item.
    * When omitted, each item is expected to have a `.url` field
    * compatible with {@link TimeCOGFrame}.
    */
-  getUrl?: (frame: TFrame, context?: AccessorContext<TFrame>) => string | URL;
+  getUrl?: (frame: TFrame, context: AccessorContext<TFrame>) => string | URL;
   /** Current playback time (epoch ms, ISO string, or Date). */
   currentTime: TimeValue;
   /** Whether playback is active. */
@@ -119,7 +120,7 @@ export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps 
 
 export type TimeCOGLayerState = {
   /** Full ordered catalog of every frame (time → URL).  Never mutated, only replaced when `frames` prop changes. */
-  catalog: NormalizedTimeCOGFrame[];
+  catalog: Catalog;
 
   /**
    * The shared GPU / CPU tile cache.
@@ -521,7 +522,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
    * frame catalog itself.
    */
   private updateFrameState(
-    catalog: NormalizedTimeCOGFrame[],
+    catalog: Catalog,
   ): void {
     const state = this.state;
     const currentTimeMs = parseTimeValue(this.props.currentTime);

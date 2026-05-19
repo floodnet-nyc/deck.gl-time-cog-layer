@@ -7,6 +7,8 @@ import type {
   TimeValue,
 } from "../types.js";
 
+export type Catalog = NormalizedTimeCOGFrame[];
+
 /** SAS tokens and other volatile auth params stripped from cache keys. */
 const VOLATILE_QUERY_PARAMS = new Set([
   "sig",
@@ -56,16 +58,15 @@ export function normalizeFrameCatalog<TFrame = TimeCOGFrame>(
   frames: readonly TFrame[],
   getTime?: (frame: TFrame, context: AccessorContext<TFrame>) => TimeValue,
   getUrl?: (frame: TFrame, context: AccessorContext<TFrame>) => string | URL,
-): NormalizedTimeCOGFrame[] {
+): Catalog {
   const byIdOrTime = new Map<string, NormalizedTimeCOGFrame>();
-  getTime ??= (frame, _) => (frame as unknown as TimeCOGFrame).time;
-  getUrl ??= (frame, _) => (frame as unknown as TimeCOGFrame).url;
+  getTime ??= (frame) => (frame as unknown as TimeCOGFrame).time;
+  getUrl ??= (frame) => (frame as unknown as TimeCOGFrame).url;
 
   frames.forEach((frame, index) => {
-    const context: AccessorContext<TFrame> = { index, data: frames, target: [] };
-    const rawTime = getTime(frame, context);
+    const rawTime = getTime(frame, { index, data: frames, target: [] });
     const timeMs = parseTimeValue(rawTime);
-    const url = String(getUrl(frame, context));
+    const url = String(getUrl(frame, { index, data: frames, target: [] }));
     const baseFrame = frame as unknown as Partial<TimeCOGFrame>;
     const id = baseFrame.id ?? `${timeMs}:${canonicalizeUrl(url)}`;
     const cacheKey = baseFrame.id ?? canonicalizeUrl(url);
@@ -112,7 +113,7 @@ export function canonicalizeUrl(input: string): string {
 }
 
 export function findNearestFrameIndex(
-  catalog: readonly NormalizedTimeCOGFrame[],
+  catalog: Catalog,
   timeMs: number,
 ): number {
   if (catalog.length === 0) {
@@ -164,7 +165,7 @@ export function findNearestFrameIndex(
  * Returns the catalog index, or −1 if no frame satisfies the condition.
  */
 export function findPreviousFrameIndex(
-  catalog: readonly NormalizedTimeCOGFrame[],
+  catalog: Catalog,
   timeMs: number,
 ): number {
   let previous = -1;
@@ -190,7 +191,7 @@ export function findPreviousFrameIndex(
  * the requested time (least visually disruptive for transient gaps).
  */
 export function resolveFrameForTime(
-  catalog: readonly NormalizedTimeCOGFrame[],
+  catalog: Catalog,
   timeMs: number,
   policy: MissingFramePolicy,
 ): TimeCOGFrameResolution {
