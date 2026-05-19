@@ -53,9 +53,9 @@ import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
 
 export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps & {
   /** Ordered list of time → COG URL entries. */
-  data?: readonly TFrame[];
+  data: readonly TFrame[];
   // DEPRECATED frames prop, will be removed in v0.3.0 in favor of `data`
-  frames: readonly TFrame[];
+  frames?: readonly TFrame[];
   /**
    * Accessor that extracts the timestamp from a frame item.
    * When omitted, each item is expected to have a `.time` field
