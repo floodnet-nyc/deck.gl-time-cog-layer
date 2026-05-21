@@ -182,10 +182,15 @@ test("frame-rate-aware scheduling exposes tunable multiscale level bias", () => 
 
   assert.deepEqual(defaultBias.slice(0, 6).map((entry) => entry.index), [24, 25, 23, 26, 28, 30]);
   assert.deepEqual(highBias.slice(0, 6).map((entry) => entry.index), [24, 25, 23, 26, 28, 30]);
+  assert.deepEqual(
+    highBias.map((entry) => entry.index),
+    defaultBias.map((entry) => entry.index),
+    "level bias should tune the flattened priorities without changing the selected multiscale candidates",
+  );
   assert.ok(
-    highBias.findIndex((entry) => entry.index === 32) >
-      defaultBias.findIndex((entry) => entry.index === 32),
-    "higher multiscaleLevelPenalty should push coarse frames later in the flattened priority order",
+    (highBias.find((entry) => entry.index === 32)?.priority ?? Infinity) <
+      (defaultBias.find((entry) => entry.index === 32)?.priority ?? -Infinity),
+    "higher multiscaleLevelPenalty should lower the priority assigned to coarse future frames",
   );
 });
 
