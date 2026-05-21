@@ -43,6 +43,7 @@ import type {
 import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
 import { buildTileDiagSnapshot } from "./util/tile-diagnostics.js";
 import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
+import { isEqual } from "lodash-es";
 
 /**
  * Props for {@link TimeCOGLayer}.
@@ -287,26 +288,28 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
 
   updateState(params: UpdateParameters<this>): void {
     const { props, oldProps } = params;
+    const data = props.data?.length === 0 && props.frames !== undefined && props.frames.length > 0 ? props.frames : props.data;
+    const oldData = oldProps.data?.length === 0 && oldProps.frames !== undefined && oldProps.frames.length > 0 ? oldProps.frames : oldProps.data;
+
     const state = this.state;
     const { updateTriggersChanged } = params.changeFlags;
-    const framesChanged =
-      props.frames !== oldProps.frames ||
+    const framesChanged = data !== oldData ||
       !!(updateTriggersChanged && (updateTriggersChanged.getTime || updateTriggersChanged.getUrl));
-    const cachePolicyChanged = props.cachePolicy !== oldProps.cachePolicy;
+    const cachePolicyChanged = !isEqual(props.cachePolicy, oldProps.cachePolicy);
     const timeChanged = props.currentTime !== oldProps.currentTime;
     const timingChanged =
       timeChanged ||
       props.playing !== oldProps.playing ||
       props.playbackRate !== oldProps.playbackRate ||
-      props.bufferPolicy !== oldProps.bufferPolicy ||
-      props.missingFramePolicy !== oldProps.missingFramePolicy;
+      !isEqual(props.bufferPolicy, oldProps.bufferPolicy) ||
+      !isEqual(props.missingFramePolicy, oldProps.missingFramePolicy);
 
     if (cachePolicyChanged) {
       state.tileCache.updatePolicy(props.cachePolicy ?? {});
     }
 
     const catalog = framesChanged
-      ? normalizeFrameCatalog(props.data || props.frames, props.getTime, props.getUrl)
+      ? normalizeFrameCatalog(data, props.getTime, props.getUrl)
       : state.catalog;
 
     if (framesChanged) {
