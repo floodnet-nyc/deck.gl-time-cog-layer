@@ -127,6 +127,68 @@ test("frame-rate-aware backward context uses the displayed bucket representative
   );
 });
 
+test("frame-rate-aware scheduling returns a flattened multiscale window", () => {
+  const catalog = normalizeFrameCatalog(
+    Array.from({ length: 48 }, (_, index) => ({
+      time: index * 60_000,
+      url: `/${index}.tif`,
+    })),
+  );
+
+  const scheduled = scheduleFrameWindow(
+    catalog,
+    24,
+    { backwardFrames: 1, forwardFrames: 6 },
+    60,
+    1,
+    true,
+  );
+
+  assert.deepEqual(
+    scheduled.map((entry) => entry.index),
+    [24, 25, 23, 26, 28, 30, 32, 36],
+  );
+  assert.deepEqual(
+    scheduled.map((entry) => entry.level),
+    [0, 0, 0, 0, 1, 1, 2, 2],
+  );
+});
+
+test("frame-rate-aware scheduling exposes tunable multiscale level bias", () => {
+  const catalog = normalizeFrameCatalog(
+    Array.from({ length: 48 }, (_, index) => ({
+      time: index * 60_000,
+      url: `/${index}.tif`,
+    })),
+  );
+
+  const defaultBias = scheduleFrameWindow(
+    catalog,
+    24,
+    { backwardFrames: 1, forwardFrames: 6 },
+    60,
+    1,
+    true,
+  );
+  const highBias = scheduleFrameWindow(
+    catalog,
+    24,
+    { backwardFrames: 1, forwardFrames: 6 },
+    60,
+    1,
+    true,
+    4,
+  );
+
+  assert.deepEqual(defaultBias.slice(0, 6).map((entry) => entry.index), [24, 25, 23, 26, 28, 30]);
+  assert.deepEqual(highBias.slice(0, 6).map((entry) => entry.index), [24, 25, 23, 26, 28, 30]);
+  assert.ok(
+    highBias.findIndex((entry) => entry.index === 32) >
+      defaultBias.findIndex((entry) => entry.index === 32),
+    "higher multiscaleLevelPenalty should push coarse frames later in the flattened priority order",
+  );
+});
+
 test("sequence tile cache honors legacy max frame and tile-entry policy names", () => {
   const destroyed = [];
   const texture = (id) => ({

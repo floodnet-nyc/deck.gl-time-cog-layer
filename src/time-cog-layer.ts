@@ -564,6 +564,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       this.props.playbackRate,
       this.props.maxFrameRate,
       playing,
+      this.props.schedulerPolicy?.multiscaleLevelPenalty,
     ).map((sf) => sf.frame);
 
     if (!state.initialGeotiffUrl && resolution.displayFrame) {

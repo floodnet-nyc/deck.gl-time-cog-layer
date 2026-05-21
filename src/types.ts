@@ -148,6 +148,12 @@ export type SchedulerPolicy = {
   maxNetworkRequests?: number;
   maxDecodeTasks?: number;
   maxGpuUploadsPerFrame?: number;
+  /**
+   * Penalty applied per multiscale temporal level when frame-rate-aware
+   * scheduling is active. Higher values keep coarse future buckets from
+   * outranking fine near-term buckets. Default 0.5.
+   */
+  multiscaleLevelPenalty?: number;
   /** Optional per-factor scoring weights.  When omitted sensible defaults are used. */
   scoringWeights?: ScoringWeights;
 };

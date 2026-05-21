@@ -7,10 +7,14 @@ export type ScheduledFrame = {
   frame: NormalizedTimeCOGFrame;
   index: number;
   priority: number;
+  level: number;
+  bucketWidthMs: number;
 };
 
 const DEFAULT_BACKWARD_FRAMES = 2;
 const DEFAULT_FORWARD_FRAMES = 6;
+const BASE_LEVEL_QUOTA = 2;
+const DEFAULT_MULTISCALE_LEVEL_PENALTY = 0.5;
 
 /**
  * Determine which frames to prefetch around the playhead.
@@ -30,6 +34,7 @@ export function scheduleFrameWindow(
   playbackRate = 0,
   maxFrameRate = 0,
   playing = false,
+  multiscaleLevelPenalty = DEFAULT_MULTISCALE_LEVEL_PENALTY,
 ): ScheduledFrame[] {
   if (targetIndex < 0 || targetIndex >= catalog.length) {
     return [];
@@ -59,11 +64,17 @@ export function scheduleFrameWindow(
     catalog, anchorIndex + 1, after, 1, bucketIntervalMs, representative, anchorBucket,
   );
 
-  return [...backwardIndices.reverse(), anchorIndex, ...forwardIndices]
-    .map((index) => ({
+  return [
+    ...backwardIndices.reverse(),
+    { index: anchorIndex, level: 0, bucketWidthMs: bucketIntervalMs },
+    ...forwardIndices,
+  ]
+    .map(({ index, level, bucketWidthMs }) => ({
       frame: catalog[index],
       index,
-      priority: scoreFrame(index, anchorIndex, direction),
+      level,
+      bucketWidthMs,
+      priority: scoreFrame(index, anchorIndex, direction, level, multiscaleLevelPenalty),
     }))
     .sort((a, b) => b.priority - a.priority);
 }
@@ -82,8 +93,78 @@ function collectFrameIndices(
   bucketIntervalMs: number,
   representative: "first" | "last",
   excludeBucket: number | null,
-): number[] {
-  const indices: number[] = [];
+): Array<{ index: number; level: number; bucketWidthMs: number }> {
+  if (count <= 0) {
+    return [];
+  }
+
+  if (!bucketIntervalMs) {
+    return collectSingleScaleFrameIndices(
+      catalog,
+      startIndex,
+      count,
+      step,
+      bucketIntervalMs,
+      representative,
+      excludeBucket,
+      0,
+    );
+  }
+
+  const indices: Array<{ index: number; level: number; bucketWidthMs: number }> = [];
+  let cursor = startIndex;
+  let level = 0;
+  let lastVisitedIndex = step > 0 ? startIndex - 1 : startIndex + 1;
+
+  while (
+    cursor >= 0 &&
+    cursor < catalog.length &&
+    indices.length < count
+  ) {
+    const levelBucketWidthMs = bucketIntervalMs * (2 ** level);
+    const levelQuota = levelQuotaFor(level, count - indices.length);
+    const levelExcludeBucket = computeBucket(
+      catalog,
+      Math.min(Math.max(startIndex - step, 0), catalog.length - 1),
+      levelBucketWidthMs,
+    );
+    const collected = collectSingleScaleFrameIndices(
+      catalog,
+      cursor,
+      levelQuota,
+      step,
+      levelBucketWidthMs,
+      representative,
+      levelExcludeBucket ?? excludeBucket,
+      level,
+      lastVisitedIndex,
+    );
+
+    if (collected.length === 0) {
+      break;
+    }
+
+    indices.push(...collected);
+    lastVisitedIndex = collected[collected.length - 1]?.index ?? lastVisitedIndex;
+    cursor = step > 0 ? lastVisitedIndex + 1 : lastVisitedIndex - 1;
+    level += 1;
+  }
+
+  return indices.slice(0, count);
+}
+
+function collectSingleScaleFrameIndices(
+  catalog: readonly NormalizedTimeCOGFrame[],
+  startIndex: number,
+  count: number,
+  step: -1 | 1,
+  bucketIntervalMs: number,
+  representative: "first" | "last",
+  excludeBucket: number | null,
+  level: number,
+  boundaryIndex?: number,
+): Array<{ index: number; level: number; bucketWidthMs: number }> {
+  const indices: Array<{ index: number; level: number; bucketWidthMs: number }> = [];
   let lastBucket = excludeBucket;
 
   for (
@@ -97,12 +178,42 @@ function collectFrameIndices(
     }
 
     const { start, end } = findBucketBounds(catalog, index, bucketIntervalMs);
-    indices.push(representative === "first" ? start : end);
+    const representativeIndex = representative === "first" ? start : end;
+
+    if (
+      boundaryIndex !== undefined &&
+      (
+        (step > 0 && representativeIndex <= boundaryIndex) ||
+        (step < 0 && representativeIndex >= boundaryIndex)
+      )
+    ) {
+      lastBucket = bucket;
+      index = step > 0 ? end + 1 : start - 1;
+      continue;
+    }
+
+    indices.push({
+      index: representativeIndex,
+      level,
+      bucketWidthMs: bucketIntervalMs,
+    });
     lastBucket = bucket;
     index = step > 0 ? end + 1 : start - 1;
   }
 
   return indices;
+}
+
+function levelQuotaFor(level: number, remaining: number): number {
+  if (remaining <= 0) {
+    return 0;
+  }
+
+  if (level === 0) {
+    return Math.min(BASE_LEVEL_QUOTA, remaining);
+  }
+
+  return Math.min(Math.max(BASE_LEVEL_QUOTA, 2 ** (level - 1)), remaining);
 }
 
 function findBucketBounds(
@@ -162,12 +273,19 @@ function computeBucket(
   return Math.floor((frame.timeMs - originTimeMs) / bucketIntervalMs);
 }
 
-function scoreFrame(index: number, targetIndex: number, direction: number): number {
+function scoreFrame(
+  index: number,
+  targetIndex: number,
+  direction: number,
+  level = 0,
+  multiscaleLevelPenalty = DEFAULT_MULTISCALE_LEVEL_PENALTY,
+): number {
   const distance = Math.abs(index - targetIndex);
   const directionalBoost =
     direction === 0 ? 0 : Math.sign(index - targetIndex) === direction ? 0.5 : -0.25;
+  const levelPenalty = level * multiscaleLevelPenalty;
 
-  return 100 - distance + directionalBoost;
+  return 100 - distance + directionalBoost - levelPenalty;
 }
 
 /**
