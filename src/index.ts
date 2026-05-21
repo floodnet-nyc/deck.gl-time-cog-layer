@@ -8,8 +8,8 @@ export {
 } from "./util/frame-catalog.js";
 export { FramePrefetcher } from "./frame-prefetcher.js";
 export { GeoTIFFRegistry } from "./util/geotiff-registry.js";
-export type { BufferCoverage } from "./util/frame-coverage.js";
-export { computeCoverage, computeBufferState, isFrameReady } from "./util/frame-coverage.js";
+export type { BufferCoverage, PrefetchBackpressureState } from "./util/frame-coverage.js";
+export { computeCoverage, computeBufferState, computePrefetchBackpressureState, isFrameReady } from "./util/frame-coverage.js";
 export type { CachedTile, TileCachePolicy, TileCacheStats, TileOrigin, TileQuality } from "./sequence-tile-cache.js";
 export { SequenceTileCache } from "./sequence-tile-cache.js";
 export type { TimeCOGLayerProps } from "./time-cog-layer.js";

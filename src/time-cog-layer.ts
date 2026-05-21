@@ -21,7 +21,7 @@ import { SequenceTileCache } from "./sequence-tile-cache.js";
 import { TimeSequenceTileLayer } from "./time-sequence-tile-layer.js";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
 import { detectInteractionMode } from "./util/interaction-mode.js";
-import { computeCoverage, computeBufferState } from "./util/frame-coverage.js";
+import { computePrefetchBackpressureState } from "./util/frame-coverage.js";
 import { buildBufferState, buildStats } from "./util/stats-collector.js";
 import type {
   COGLayerPassThroughProps,
@@ -688,14 +688,9 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
 
     const pool = this.props.pool ?? defaultDecoderPool();
 
-    const coverage = computeCoverage(
+    const { coverage, bufferState } = computePrefetchBackpressureState(
       state.tileCache,
-      displayFrame,
-      state.visibleTileRef.tiles,
-    );
-
-    const bufferState = computeBufferState(
-      state.tileCache,
+      targetFrame,
       displayFrame,
       scheduledFrames,
       state.visibleTileRef.tiles,

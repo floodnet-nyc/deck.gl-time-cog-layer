@@ -37,6 +37,11 @@ export type BufferCoverage = {
   targetAhead: number;
 };
 
+export type PrefetchBackpressureState = {
+  coverage: number;
+  bufferState: BufferCoverage;
+};
+
 /**
  * Count contiguous full-quality frames ahead of and behind the
  * playhead. Scheduled frames are sorted by timestamp so the walk
@@ -80,6 +85,35 @@ export function computeBufferState(
   }
 
   return { bufferedAhead, bufferedBehind, targetAhead };
+}
+
+/**
+ * Compute the coverage and contiguous-buffer state for the frame the
+ * prefetcher is actively trying to catch up to. This should be the
+ * target / prefetch-anchor frame, not necessarily the currently
+ * displayed frame, otherwise a fully cached held frame can mask
+ * backlog on the real playback target.
+ */
+export function computePrefetchBackpressureState(
+  tileCache: SequenceTileCache,
+  targetFrame: NormalizedTimeCOGFrame | null,
+  displayFrame: NormalizedTimeCOGFrame | null,
+  scheduledFrames: NormalizedTimeCOGFrame[],
+  visibleTiles: readonly TileCoord[],
+  targetAhead: number,
+): PrefetchBackpressureState {
+  const anchorFrame = targetFrame ?? displayFrame;
+
+  return {
+    coverage: computeCoverage(tileCache, anchorFrame, visibleTiles),
+    bufferState: computeBufferState(
+      tileCache,
+      anchorFrame,
+      scheduledFrames,
+      visibleTiles,
+      targetAhead,
+    ),
+  };
 }
 
 export function isFrameReady(

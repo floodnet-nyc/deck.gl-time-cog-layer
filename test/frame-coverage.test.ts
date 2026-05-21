@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SequenceTileCache, computeCoverage, computeBufferState, isFrameReady } from "../src/index.ts";
+import {
+  SequenceTileCache,
+  computeCoverage,
+  computeBufferState,
+  computePrefetchBackpressureState,
+  isFrameReady,
+} from "../src/index.ts";
 
 function makeTexture() {
   return { destroy() {} };
@@ -171,6 +177,42 @@ test("computeBufferState sorts by time, not priority", () => {
 
   assert.equal(result.bufferedAhead, 1, "f3 is contiguous ahead");
   assert.equal(result.bufferedBehind, 1, "f1 is contiguous behind (f0 not cached)");
+});
+
+test("computePrefetchBackpressureState anchors to the target frame instead of the displayed hold frame", () => {
+  const cache = new SequenceTileCache();
+  const tiles = [{ x: 0, y: 0, z: 0 }];
+  const displayed = makeFrame("displayed", 0);
+  const target = makeFrame("target", 1);
+  const next = makeFrame("next", 2);
+
+  cache.put(
+    displayed.id,
+    0,
+    0,
+    0,
+    { texture: makeTexture(), byteLength: 1, width: 1, height: 1, quality: "full" },
+  );
+  cache.put(
+    next.id,
+    0,
+    0,
+    0,
+    { texture: makeTexture(), byteLength: 1, width: 1, height: 1, quality: "full" },
+  );
+
+  const result = computePrefetchBackpressureState(
+    cache,
+    target,
+    displayed,
+    [displayed, target, next],
+    tiles,
+    6,
+  );
+
+  assert.equal(result.coverage, 0, "uncached target frame should report zero coverage");
+  assert.equal(result.bufferState.bufferedBehind, 1, "displayed frame is contiguous behind the target");
+  assert.equal(result.bufferState.bufferedAhead, 1, "next frame is contiguous ahead of the target");
 });
 
 // ─── isFrameReady ───
