@@ -289,16 +289,17 @@ function render(): void {
     renderTile: renderPrecipTile,
     opacity: DISPLAY_OPACITY,
     missingFramePolicy: "nearest",
-    maxFrameRate: 30,
+    maxFrameRate: 15,
     qualityPolicy: {
       lowResFirst: false,
     },
     bufferPolicy: {
       backwardFrames: 0,
-      forwardFrames: 8,
+      forwardFrames: playing ? 16 : 1,
     },
     schedulerPolicy: {
-      maxNetworkRequests: 8,
+      maxNetworkRequests: 16,
+      frameRateSnap: 'slower',
     },
     // cachePolicy: {
     //   maxFrames: 120,

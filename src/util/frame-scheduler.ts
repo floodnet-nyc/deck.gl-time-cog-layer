@@ -11,6 +11,8 @@ export type ScheduledFrame = {
   bucketWidthMs: number;
 };
 
+export type FrameRateSnapPolicy = "off" | "on" | "slower" | "faster";
+
 const DEFAULT_BACKWARD_FRAMES = 2;
 const DEFAULT_FORWARD_FRAMES = 6;
 const BASE_LEVEL_QUOTA = 2;
@@ -35,6 +37,7 @@ export function scheduleFrameWindow(
   maxFrameRate = 0,
   playing = false,
   multiscaleLevelPenalty = DEFAULT_MULTISCALE_LEVEL_PENALTY,
+  frameRateSnap: FrameRateSnapPolicy = "off",
 ): ScheduledFrame[] {
   if (targetIndex < 0 || targetIndex >= catalog.length) {
     return [];
@@ -46,9 +49,13 @@ export function scheduleFrameWindow(
   const before = direction < 0 ? forwardFrames : backwardFrames;
   const after = direction < 0 ? backwardFrames : forwardFrames;
 
-  const bucketIntervalMs = maxFrameRate > 0 && playing
-    ? (1000 / maxFrameRate) * Math.abs(playbackRate)
-    : 0;
+  const bucketIntervalMs = resolvePlaybackBucketIntervalMs(
+    catalog,
+    maxFrameRate,
+    playbackRate,
+    playing,
+    frameRateSnap,
+  );
 
   const representative = direction < 0 ? "last" : "first";
   const anchorIndex = representativeIndex(catalog, targetIndex, bucketIntervalMs, representative);
@@ -77,6 +84,41 @@ export function scheduleFrameWindow(
       priority: scoreFrame(index, anchorIndex, direction, level, multiscaleLevelPenalty),
     }))
     .sort((a, b) => b.priority - a.priority);
+}
+
+export function resolvePlaybackBucketIntervalMs(
+  catalog: readonly NormalizedTimeCOGFrame[],
+  maxFrameRate: number,
+  playbackRate: number,
+  playing: boolean,
+  frameRateSnap: FrameRateSnapPolicy = "off",
+): number {
+  if (maxFrameRate <= 0 || !playing) {
+    return 0;
+  }
+
+  const rawBucketIntervalMs = (1000 / maxFrameRate) * Math.abs(playbackRate);
+  if (!Number.isFinite(rawBucketIntervalMs) || rawBucketIntervalMs <= 0) {
+    return 0;
+  }
+
+  if (frameRateSnap === "off") {
+    return rawBucketIntervalMs;
+  }
+
+  const representativeFramePeriodMs = representativeFramePeriod(catalog);
+  if (!Number.isFinite(representativeFramePeriodMs) || representativeFramePeriodMs <= 0) {
+    return rawBucketIntervalMs;
+  }
+
+  const ratio = rawBucketIntervalMs / representativeFramePeriodMs;
+  const normalizedRatio = Math.abs(ratio - Math.round(ratio)) < 1e-9 ? Math.round(ratio) : ratio;
+  const snappedBucketIntervalMs =
+    frameRateSnap === "faster"
+      ? Math.max(1, Math.floor(normalizedRatio)) * representativeFramePeriodMs
+      : Math.ceil(normalizedRatio) * representativeFramePeriodMs;
+
+  return snappedBucketIntervalMs || rawBucketIntervalMs;
 }
 
 /**
@@ -288,6 +330,27 @@ function scoreFrame(
   return 100 - distance + directionalBoost - levelPenalty;
 }
 
+function representativeFramePeriod(catalog: readonly NormalizedTimeCOGFrame[]): number {
+  if (catalog.length < 2) {
+    return 0;
+  }
+
+  const deltas: number[] = [];
+  for (let index = 1; index < catalog.length; index += 1) {
+    const delta = catalog[index]!.timeMs - catalog[index - 1]!.timeMs;
+    if (delta > 0 && Number.isFinite(delta)) {
+      deltas.push(delta);
+    }
+  }
+
+  if (deltas.length === 0) {
+    return 0;
+  }
+
+  deltas.sort((a, b) => a - b);
+  return deltas[Math.floor(deltas.length / 2)] ?? 0;
+}
+
 /**
  * When `maxFrameRate` is set and playback is active, suppress frame
  * changes that land in the same time bucket as the previously
@@ -304,14 +367,22 @@ export function applyMaxFrameRateBucking(
   lastDisplayedFrameId: string | null,
   maxFrameRate: number,
   playbackRate: number,
+  frameRateSnap: FrameRateSnapPolicy = "off",
 ): NormalizedTimeCOGFrame {
   if (maxFrameRate <= 0 || !lastDisplayedFrameId) {
     return resolvedFrame;
   }
 
-  const bucketIntervalMs =
-    (1000 / maxFrameRate) *
-    Math.abs(playbackRate);
+  const bucketIntervalMs = resolvePlaybackBucketIntervalMs(
+    catalog,
+    maxFrameRate,
+    playbackRate,
+    true,
+    frameRateSnap,
+  );
+  if (!bucketIntervalMs) {
+    return resolvedFrame;
+  }
   const originTimeMs = catalog[0]?.timeMs ?? 0;
   const resolvedBucket = Math.floor(
     (resolvedFrame.timeMs - originTimeMs) / bucketIntervalMs,

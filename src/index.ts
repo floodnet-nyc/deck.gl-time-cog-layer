@@ -33,7 +33,13 @@ export type {
   TimeCOGStats,
   TimeValue,
 } from "./types.js";
-export { scheduleFrameWindow, applyMaxFrameRateBucking, type ScheduledFrame } from "./util/frame-scheduler.js";
+export {
+  scheduleFrameWindow,
+  applyMaxFrameRateBucking,
+  resolvePlaybackBucketIntervalMs,
+  type ScheduledFrame,
+  type FrameRateSnapPolicy,
+} from "./util/frame-scheduler.js";
 export { detectInteractionMode } from "./util/interaction-mode.js";
 export { buildBufferState, buildStats } from "./util/stats-collector.js";
 export { TaskQueue, taskKey, type TileTask, type TileCoord } from "./util/task-queue.js";

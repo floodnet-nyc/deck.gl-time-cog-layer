@@ -14,6 +14,7 @@ import {
   resolveFrameForTime,
   scheduleFrameWindow,
   applyMaxFrameRateBucking,
+  resolvePlaybackBucketIntervalMs,
 } from "../src/index.ts";
 import { TimeSequenceTileLayer } from "../src/time-sequence-tile-layer.ts";
 
@@ -151,6 +152,69 @@ test("frame-rate-aware scheduling returns a flattened multiscale window", () => 
   assert.deepEqual(
     scheduled.map((entry) => entry.level),
     [0, 0, 0, 0, 1, 1, 2, 2],
+  );
+});
+
+test("optional cadence snapping widens playback buckets to source-frame multiples", () => {
+  const catalog = normalizeFrameCatalog(
+    Array.from({ length: 12 }, (_, index) => ({
+      time: index * 120_000,
+      url: `/${index}.tif`,
+    })),
+  );
+
+  assert.equal(
+    resolvePlaybackBucketIntervalMs(catalog, 10, 1_800, true),
+    180_000,
+  );
+  assert.equal(
+    resolvePlaybackBucketIntervalMs(catalog, 10, 1_800, true, "on"),
+    240_000,
+  );
+  assert.equal(
+    resolvePlaybackBucketIntervalMs(catalog, 10, 1_800, true, "slower"),
+    240_000,
+  );
+  assert.equal(
+    resolvePlaybackBucketIntervalMs(catalog, 10, 1_800, true, "faster"),
+    120_000,
+  );
+});
+
+test("optional cadence snapping regularizes representative selection for 3:2 cadence mismatch", () => {
+  const catalog = normalizeFrameCatalog(
+    Array.from({ length: 18 }, (_, index) => ({
+      time: index * 120_000,
+      url: `/${index}.tif`,
+    })),
+  );
+
+  assert.deepEqual(
+    scheduleFrameWindow(
+      catalog,
+      9,
+      { backwardFrames: 1, forwardFrames: 4 },
+      1_800,
+      10,
+      true,
+      0.5,
+      "off",
+    ).map((entry) => entry.index),
+    [9, 8, 11, 12, 15],
+  );
+
+  assert.deepEqual(
+    scheduleFrameWindow(
+      catalog,
+      9,
+      { backwardFrames: 1, forwardFrames: 4 },
+      1_800,
+      10,
+      true,
+      0.5,
+      "slower",
+    ).map((entry) => entry.index),
+    [8, 10, 6, 12, 16],
   );
 });
 

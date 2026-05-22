@@ -149,6 +149,21 @@ export type SchedulerPolicy = {
   maxDecodeTasks?: number;
   maxGpuUploadsPerFrame?: number;
   /**
+   * Optional playback cadence snapping policy applied when
+   * `maxFrameRate` bucketing is active.
+   *
+   * - `"off"` (default): use the exact requested playback bucket width.
+   * - `"on"` / `"slower"`: widen the playback bucket to the next
+   *   whole-number multiple of the representative source frame period.
+   *   This preserves the `maxFrameRate` cap while aligning cadence to
+   *   the underlying frame spacing more regularly.
+   * - `"faster"`: narrow the playback bucket to the previous
+   *   whole-number multiple of the representative source frame period,
+   *   which can exceed the requested `maxFrameRate` cap in exchange
+   *   for a more source-aligned cadence.
+   */
+  frameRateSnap?: "off" | "on" | "slower" | "faster";
+  /**
    * Penalty applied per multiscale temporal level when frame-rate-aware
    * scheduling is active. Higher values keep coarse future buckets from
    * outranking fine near-term buckets. Default 0.5.

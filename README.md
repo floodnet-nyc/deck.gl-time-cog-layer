@@ -125,7 +125,7 @@ updateTriggers: {
 | `bufferPolicy` | `object` | `{ backwardFrames: 2, forwardFrames: 6 }` | How many frames to prefetch ahead / retain behind |
 | `cachePolicy` | `object` | `{}` | Tile cache limits — `memoryBytes`, `maxFrames`, `maxTiles` |
 | `qualityPolicy` | `object` | `{}` | Progressive loading behaviour — `lowResFirst`, `previewOverviewBias`, `scrubOverviewBias`, `fullResUpgradeIdleMs` |
-| `schedulerPolicy` | `object` | `{ maxNetworkRequests: 4 }` | Prefetch concurrency (`maxNetworkRequests`, `maxDecodeTasks`, `maxGpuUploadsPerFrame`), multiscale temporal bias (`multiscaleLevelPenalty`), and optional scoring weights |
+| `schedulerPolicy` | `object` | `{ maxNetworkRequests: 4 }` | Prefetch concurrency (`maxNetworkRequests`, `maxDecodeTasks`, `maxGpuUploadsPerFrame`), optional cadence snapping (`frameRateSnap`), multiscale temporal bias (`multiscaleLevelPenalty`), and optional scoring weights |
 | `descriptorMode` | `"reuse-first" \| "manifest"` | `"reuse-first"` | How the shared tileset descriptor is determined |
 | `descriptorManifest` | `object` | — | Pre-declared GeoTIFF structure (required with `descriptorMode: "manifest"`) |
 | `getTileData` | `(image, options) => Promise<DataT>` | — | As [COGLayer's `getTileData`](https://developmentseed.org/deck.gl-raster/api/geotiff/) |
@@ -216,10 +216,19 @@ type SchedulerPolicy = {
   maxNetworkRequests?: number;     // default 4 — prefetch concurrency
   maxDecodeTasks?: number;         // max concurrent decode tasks
   maxGpuUploadsPerFrame?: number;  // max GPU uploads per frame
+  frameRateSnap?: "off" | "on" | "slower" | "faster"; // default "off"
   multiscaleLevelPenalty?: number; // default 0.5 — pushes coarse temporal buckets later in the schedule
   scoringWeights?: ScoringWeights;  // per-factor scoring weight overrides
 };
 ```
+
+`frameRateSnap` is useful when the playback bucket width implied by
+`playbackRate` and `maxFrameRate` is incommensurate with the source frame period
+(for example, 3-minute buckets over 2-minute source frames).
+
+- `off`: use the exact requested playback bucket width.
+- `on` / `slower`: widen the effective playback bucket to the next whole-number multiple of the representative source frame period. This preserves the `maxFrameRate` cap while producing a more regular cadence.
+- `faster`: narrow the effective playback bucket to the previous whole-number multiple of the representative source frame period. This can exceed the requested `maxFrameRate` cap in exchange for a more source-aligned cadence.
 
 ### Callbacks
 
