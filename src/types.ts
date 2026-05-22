@@ -183,17 +183,20 @@ export type TimeCOGBufferState = {
   displayFrame: NormalizedTimeCOGFrame | null;
   scheduledFrameIds: string[];
   readyFrameIds: string[];
+  missingFrameIds: string[];
   missing: boolean;
 };
 
 export type TimeCOGStats = {
   frameCount: number;
   readyFrameCount: number;
+  missingFrameCount: number;
   cacheEntryCount: number;
   scheduledFrameCount: number;
   currentTimeMs: number;
   targetFrameId: string | null;
   displayFrameId: string | null;
+  missingFrameIds: string[];
   /** Tasks currently queued or in-flight in the prefetcher. */
   prefetchTaskCount: number;
   queuedPrefetchTaskCount: number;

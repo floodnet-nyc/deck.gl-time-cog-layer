@@ -32,6 +32,7 @@ function makeState(overrides = {}) {
     lastInteractionMs: 0,
     upgradeTimer: null,
     readyFrameIds: new Set(),
+    missingFrameIds: new Set(),
     geotiffRegistry: null,
     ...overrides,
   };
@@ -59,6 +60,14 @@ test("buildBufferState readyFrameIds come from state readiness tracking", () => 
   assert.deepEqual(result.readyFrameIds, ["f1"]);
 });
 
+test("buildBufferState includes missingFrameIds from display and prefetch tracking", () => {
+  const state = makeState({ missingFrameIds: new Set(["f1"]) });
+  state.prefetcher.markMissingFrame("f2");
+
+  const result = buildBufferState(state.tileCache, state);
+  assert.deepEqual(result.missingFrameIds.sort(), ["f1", "f2"]);
+});
+
 test("buildStats reports frame counts and current time", () => {
   const state = makeState();
   const result = buildStats(state.tileCache, state.prefetcher, state);
@@ -79,6 +88,15 @@ test("buildStats cache stats reflect tile cache contents", () => {
   const result = buildStats(state.tileCache, state.prefetcher, state);
   assert.equal(result.cacheEntryCount, 1);
   assert.equal(result.readyFrameCount, 1);
+});
+
+test("buildStats reports missing frame ids from display and prefetch tracking", () => {
+  const state = makeState({ missingFrameIds: new Set(["f1"]) });
+  state.prefetcher.markMissingFrame("f2");
+
+  const result = buildStats(state.tileCache, state.prefetcher, state);
+  assert.equal(result.missingFrameCount, 2);
+  assert.deepEqual(result.missingFrameIds.sort(), ["f1", "f2"]);
 });
 
 test("buildStats displayCacheHitRate computes correctly", () => {

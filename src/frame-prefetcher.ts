@@ -5,7 +5,7 @@ import type {
   DecoderPool,
 } from "@developmentseed/geotiff";
 import type { SequenceTileCache } from "./sequence-tile-cache.js";
-import { isAbortError, isMissingTileError } from "./util/tile-utils.js";
+import { isAbortError, isMissingFrameError, isMissingTileError } from "./util/tile-utils.js";
 import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWeights } from "./types.js";
 import { TaskQueue, taskKey, type TileCoord, type TileTask } from "./util/task-queue.js";
 import {
@@ -103,6 +103,7 @@ export class FramePrefetcher {
    * re-requesting tiles that `decodeGeoTIFFTile` returns `null` for.
    */
   private missingTileKeys = new Set<string>();
+  private missingFrameIds = new Set<string>();
 
   constructor(
     tileCache: SequenceTileCache,
@@ -142,6 +143,11 @@ export class FramePrefetcher {
   /** @internal Exposed for test verification of the negative tile cache. */
   get missingKeys(): ReadonlySet<string> {
     return this.missingTileKeys;
+  }
+
+  /** Frame ids known to fail at GeoTIFF open time. */
+  get missingFrames(): ReadonlySet<string> {
+    return this.missingFrameIds;
   }
 
   /** @internal Public for test assertions on adaptive concurrency. */
@@ -242,6 +248,14 @@ export class FramePrefetcher {
     this.pump();
   }
 
+  markMissingFrame(frameId: string): void {
+    this.missingFrameIds.add(frameId);
+  }
+
+  clearMissingFrames(): void {
+    this.missingFrameIds.clear();
+  }
+
   abortAll(): void {
     this.taskQueue.abortAll();
     this.missingTileKeys.clear();
@@ -336,17 +350,34 @@ export class FramePrefetcher {
 
     const t0 = performance.now();
 
-    try {
-      const registry = this.sharedRegistry ?? this.internalRegistry;
-      const getTileData = this.getTileData;
+    const registry = this.sharedRegistry ?? this.internalRegistry;
+    const getTileData = this.getTileData;
 
-      if (!getTileData || !this.device) {
+    if (!getTileData || !this.device) {
+      return;
+    }
+
+    let geotiff: GeoTIFF;
+    try {
+      geotiff = await registry.open(id, url, task.requestInit);
+    } catch (err) {
+      if (isAbortError(err)) {
+        // Don't log aborts — these are expected when rapidly switching frames.
+        return;
+      } else if (isMissingFrameError(err)) {
+        this.missingFrameIds.add(id);
+        console.warn("FramePrefetcher: missing frame", { url, x, y, z, err });
+        return;
+      } else {
+        console.warn("FramePrefetcher: failed to open GeoTIFF", { url, err });
         return;
       }
+    }
 
-      const result = await registry.decodeTile(
-        { id, url, x, y, z, getTileData },
-        {
+    try {
+      const result = await registry.decodeTile({ 
+        geotiff, x, y, z, getTileData,
+        options: {
           device: this.device,
           signal: (
             this.layerSignal && controller.signal
@@ -354,9 +385,8 @@ export class FramePrefetcher {
             : (this.layerSignal ?? controller.signal)
           ),
           pool: this.pool,
-          requestInit: task.requestInit,
-        },
-      );
+        }
+      });
 
       if (!result) {
         this.missingTileKeys.add(key);
@@ -385,6 +415,7 @@ export class FramePrefetcher {
       if (isAbortError(err)) {
         this.abortedTasks += 1;
       } else if (isMissingTileError(err)) {
+        console.warn("FramePrefetcher: missing tile", {err});
         this.missingTileKeys.add(key);
       } else {
         console.warn("FramePrefetcher: tile fetch failed", err);

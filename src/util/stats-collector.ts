@@ -10,11 +10,17 @@ export function buildBufferState(
   _tileCache: SequenceTileCache,
   state: TimeCOGLayerState,
 ): TimeCOGBufferState {
+  const missingFrameIds = new Set<string>(state.missingFrameIds);
+  for (const frameId of state.prefetcher.missingFrames) {
+    missingFrameIds.add(frameId);
+  }
+
   return {
     targetFrame: state.targetFrame,
     displayFrame: state.displayFrame,
     scheduledFrameIds: state.scheduledFrames.map((f) => f.id),
     readyFrameIds: [...state.readyFrameIds],
+    missingFrameIds: [...missingFrameIds],
     missing: state.missing,
   };
 }
@@ -26,6 +32,10 @@ export function buildStats(
 ): TimeCOGStats {
   const tileStats = tileCache.stats();
   const prefetchStats = prefetcher.stats();
+  const missingFrameIds = new Set<string>(state.missingFrameIds);
+  for (const frameId of prefetcher.missingFrames) {
+    missingFrameIds.add(frameId);
+  }
   const totalDisplayAccesses =
     tileStats.displayHitCount + tileStats.displayMissCount;
   const prefetchedLoadedCount = tileStats.prefetchedLoadedCount;
@@ -34,11 +44,13 @@ export function buildStats(
   return {
     frameCount: state.catalog.length,
     readyFrameCount: state.readyFrameIds.size,
+    missingFrameCount: missingFrameIds.size,
     cacheEntryCount: tileStats.tileCount,
     scheduledFrameCount: state.scheduledFrames.length,
     currentTimeMs: state.currentTimeMs,
     targetFrameId: state.targetFrame?.id ?? null,
     displayFrameId: state.displayFrame?.id ?? null,
+    missingFrameIds: [...missingFrameIds],
     prefetchTaskCount: prefetchStats.prefetchTaskCount,
     queuedPrefetchTaskCount: prefetchStats.queuedTaskCount,
     inFlightPrefetchTaskCount: prefetchStats.inFlightTaskCount,

@@ -74,10 +74,9 @@ export class GeoTIFFRegistry {
 
   async decodeTile<T>(
     {
-      id, url, x, y, z, getTileData
+      geotiff, x, y, z, getTileData, options
     }: {
-      id: string;
-      url: string;
+      geotiff: GeoTIFF;
       x: number;
       y: number;
       z: number;
@@ -85,22 +84,16 @@ export class GeoTIFFRegistry {
         image: GeoTIFF | Overview,
         options: { device: Device; x: number; y: number; signal?: AbortSignal; pool: DecoderPool },
       ) => Promise<T>,
-    },
-    options: {
-      device: Device;
-      signal?: AbortSignal;
-      pool?: DecoderPool | null;
-      requestInit?: RequestInit;
+      options: {
+        device: Device;
+        signal?: AbortSignal;
+        pool?: DecoderPool | null;
+      },
     },
   ): Promise<T | null> {
-    const geotiff = await this.open(id, url, options.requestInit);
     return decodeGeoTIFFTile({
       geotiff, x, y, z, getTileData, 
-      options: {
-      device: options.device,
-      signal: options.signal,
-      pool: options.pool,
-    }
+      options
     });
   }
 }
