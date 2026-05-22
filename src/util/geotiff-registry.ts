@@ -3,8 +3,16 @@ import { GeoTIFF } from "@developmentseed/geotiff";
 import type { Overview, DecoderPool } from "@developmentseed/geotiff";
 import { decodeGeoTIFFTile } from "./tile-utils.js";
 import { openGeoTIFF } from "./geotiff-open.js";
+import { isAbortError, isMissingFrameError } from "./tile-utils.js";
 
 const DEFAULT_MAX_SIZE = 12;
+
+export type RegistryTileLoadResult<T> =
+  | { status: "ok"; result: T }
+  | { status: "missing-tile" }
+  | { status: "missing-frame"; error: unknown }
+  | { status: "aborted"; error: unknown }
+  | { status: "error"; error: unknown };
 
 /**
  * Shared GeoTIFF instance cache used by both the render sublayer
@@ -95,5 +103,71 @@ export class GeoTIFFRegistry {
       geotiff, x, y, z, getTileData, 
       options
     });
+  }
+
+  async loadTile<T>({
+    frameId,
+    url,
+    requestInit,
+    x,
+    y,
+    z,
+    getTileData,
+    options,
+  }: {
+    frameId: string;
+    url: string;
+    requestInit?: RequestInit;
+    x: number;
+    y: number;
+    z: number;
+    getTileData: (
+      image: GeoTIFF | Overview,
+      options: { device: Device; x: number; y: number; signal?: AbortSignal; pool: DecoderPool },
+    ) => Promise<T>;
+    options: {
+      device: Device;
+      signal?: AbortSignal;
+      pool?: DecoderPool | null;
+    };
+  }): Promise<RegistryTileLoadResult<T>> {
+    let geotiff: GeoTIFF;
+
+    try {
+      geotiff = await this.open(frameId, url, requestInit);
+    } catch (error) {
+      if (isAbortError(error)) {
+        return { status: "aborted", error };
+      }
+
+      if (isMissingFrameError(error)) {
+        return { status: "missing-frame", error };
+      }
+
+      return { status: "error", error };
+    }
+
+    try {
+      const result = await this.decodeTile({
+        geotiff,
+        x,
+        y,
+        z,
+        getTileData,
+        options,
+      });
+
+      if (!result) {
+        return { status: "missing-tile" };
+      }
+
+      return { status: "ok", result };
+    } catch (error) {
+      if (isAbortError(error)) {
+        return { status: "aborted", error };
+      }
+
+      return { status: "error", error };
+    }
   }
 }

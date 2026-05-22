@@ -32,7 +32,6 @@ function makeState(overrides = {}) {
     lastInteractionMs: 0,
     upgradeTimer: null,
     readyFrameIds: new Set(),
-    missingFrameIds: new Set(),
     geotiffRegistry: null,
     ...overrides,
   };
@@ -61,7 +60,8 @@ test("buildBufferState readyFrameIds come from state readiness tracking", () => 
 });
 
 test("buildBufferState includes missingFrameIds from display and prefetch tracking", () => {
-  const state = makeState({ missingFrameIds: new Set(["f1"]) });
+  const state = makeState();
+  state.prefetcher.markMissingFrame("f1");
   state.prefetcher.markMissingFrame("f2");
 
   const result = buildBufferState(state.tileCache, state);
@@ -91,7 +91,8 @@ test("buildStats cache stats reflect tile cache contents", () => {
 });
 
 test("buildStats reports missing frame ids from display and prefetch tracking", () => {
-  const state = makeState({ missingFrameIds: new Set(["f1"]) });
+  const state = makeState();
+  state.prefetcher.markMissingFrame("f1");
   state.prefetcher.markMissingFrame("f2");
 
   const result = buildStats(state.tileCache, state.prefetcher, state);

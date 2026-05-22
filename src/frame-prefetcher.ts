@@ -5,7 +5,6 @@ import type {
   DecoderPool,
 } from "@developmentseed/geotiff";
 import type { SequenceTileCache } from "./sequence-tile-cache.js";
-import { isAbortError, isMissingFrameError, isMissingTileError } from "./util/tile-utils.js";
 import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWeights } from "./types.js";
 import { TaskQueue, taskKey, type TileCoord, type TileTask } from "./util/task-queue.js";
 import {
@@ -357,68 +356,64 @@ export class FramePrefetcher {
       return;
     }
 
-    let geotiff: GeoTIFF;
+    const result = await registry.loadTile({
+      frameId: id,
+      url,
+      requestInit: task.requestInit,
+      x,
+      y,
+      z,
+      getTileData,
+      options: {
+        device: this.device,
+        signal: (
+          this.layerSignal && controller.signal
+          ? AbortSignal.any([this.layerSignal, controller.signal])
+          : (this.layerSignal ?? controller.signal)
+        ),
+        pool: this.pool,
+      },
+    });
+
     try {
-      geotiff = await registry.open(id, url, task.requestInit);
-    } catch (err) {
-      if (isAbortError(err)) {
-        // Don't log aborts — these are expected when rapidly switching frames.
-        return;
-      } else if (isMissingFrameError(err)) {
-        this.missingFrameIds.add(id);
-        console.warn("FramePrefetcher: missing frame", { url, x, y, z, err });
-        return;
-      } else {
-        console.warn("FramePrefetcher: failed to open GeoTIFF", { url, err });
+      if (result.status === "aborted") {
+        this.abortedTasks += 1;
         return;
       }
-    }
 
-    try {
-      const result = await registry.decodeTile({ 
-        geotiff, x, y, z, getTileData,
-        options: {
-          device: this.device,
-          signal: (
-            this.layerSignal && controller.signal
-            ? AbortSignal.any([this.layerSignal, controller.signal])
-            : (this.layerSignal ?? controller.signal)
-          ),
-          pool: this.pool,
-        }
-      });
+      if (result.status === "missing-frame") {
+        this.missingFrameIds.add(id);
+        console.warn("FramePrefetcher: missing frame", { url, x, y, z, err: result.error });
+        return;
+      }
 
-      if (!result) {
+      if (result.status === "missing-tile") {
         this.missingTileKeys.add(key);
+        return;
+      }
+
+      if (result.status === "error") {
+        console.warn("FramePrefetcher: tile fetch failed", result.error);
         return;
       }
 
       const elapsed = performance.now() - t0;
 
-      if (result.texture) {
+      if (result.result.texture) {
         this.tileCache.put(id, x, y, z, {
           x, y, z,
-          texture: result.texture,
-          mask: result.mask,
-          byteLength: result.byteLength ?? 0,
-          width: result.width,
-          height: result.height,
+          texture: result.result.texture,
+          mask: result.result.mask,
+          byteLength: result.result.byteLength ?? 0,
+          width: result.result.width,
+          height: result.result.height,
           quality: "full",
           origin: "prefetch",
         });
 
-        if (elapsed > 0 && result.byteLength) {
-          this.recordTelemetry(elapsed, result.byteLength, id);
+        if (elapsed > 0 && result.result.byteLength) {
+          this.recordTelemetry(elapsed, result.result.byteLength, id);
         }
-      }
-    } catch (err) {
-      if (isAbortError(err)) {
-        this.abortedTasks += 1;
-      } else if (isMissingTileError(err)) {
-        console.warn("FramePrefetcher: missing tile", {err});
-        this.missingTileKeys.add(key);
-      } else {
-        console.warn("FramePrefetcher: tile fetch failed", err);
       }
     } finally {
       if (this.uploadsThisFrame > 0) {

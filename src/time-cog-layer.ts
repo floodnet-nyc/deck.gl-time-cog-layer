@@ -5,7 +5,7 @@ import type {
   UpdateParameters,
 } from "@deck.gl/core";
 import { CompositeLayer } from "@deck.gl/core";
-import { defaultDecoderPool, GeoTIFF } from "@developmentseed/geotiff";
+import { defaultDecoderPool } from "@developmentseed/geotiff";
 import type { _Tile2DHeader, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
 import type { Device } from "@luma.gl/core";
 import {
@@ -44,7 +44,6 @@ import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
 import { buildTileDiagSnapshot } from "./util/tile-diagnostics.js";
 import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
 import { isEqual } from "lodash-es";
-import { isAbortError, isMissingFrameError, isMissingTileError } from "./util/tile-utils.js";
 
 /**
  * Props for {@link TimeCOGLayer}.
@@ -200,8 +199,6 @@ export type TimeCOGLayerState = {
 
   /** Frame IDs that have already fired `onFrameReady` to avoid duplicate signals. */
   readyFrameIds: Set<string>;
-  /** Frame ids known to fail at GeoTIFF open time on the display path. */
-  missingFrameIds: Set<string>;
 };
 
 const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
@@ -286,7 +283,6 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       lastInteractionMs: 0,
       upgradeTimer: null,
       readyFrameIds: new Set<string>(),
-      missingFrameIds: new Set<string>(),
     } satisfies TimeCOGLayerState);
   }
 
@@ -317,7 +313,6 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       : state.catalog;
 
     if (framesChanged) {
-      state.missingFrameIds.clear();
       state.prefetcher.clearMissingFrames();
       this.setState({ catalog });
     }
@@ -451,52 +446,42 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       }
       tileCache.recordDisplayMiss();
 
-      let geotiff: GeoTIFF;
-      try {
-        geotiff = await registry.open(id, url, requestInit);
-      } catch (err) {
-        if (isAbortError(err)) {
-          // Don't log aborts — these are expected when rapidly switching frames.
-        } else if (isMissingFrameError(err)) {
-          this.state.missingFrameIds.add(id);
-          this.state.prefetcher.markMissingFrame(id);
-          console.warn("TimeCOGLayer: missing frame", { url, x, y, z, err });
-        } else {
-          console.warn("TimeCOGLayer: failed to open GeoTIFF", { url, err });
-        }
-        throw err;
-      }
-      try {
-        const result = await registry.decodeTile({ 
-          geotiff, x, y, z, getTileData,
-          options: {
-            device: options.device,
-            signal: options.signal,
-            pool: this.props.pool,
-          },
-        });
-  
-        if (!result) {
-          return null;
-        }
-  
+      const result = await registry.loadTile({
+        frameId: id,
+        url,
+        requestInit,
+        x,
+        y,
+        z,
+        getTileData,
+        options: {
+          device: options.device,
+          signal: options.signal,
+          pool: this.props.pool,
+        },
+      });
+
+      if (result.status === "ok") {
         tileCache.put(id, x, y, z, {
           x, y, z,
-          ...result,
+          ...result.result,
           quality: "full",
           origin: "display",
         });
 
-        return result;
-      } catch (err) {
-        if (isAbortError(err)) {
-        } else if (isMissingTileError(err)) {
-          console.warn("TimeCOGLayer: missing tile", {err});
-          // TODO: log with prefetcher missingTileKeys
-        } else {
-          console.warn("TimeCOGLayer: tile fetch failed", err);
-        }
+        return result.result;
       }
+
+      if (result.status === "missing-frame") {
+        this.state.prefetcher.markMissingFrame(id);
+        console.warn("TimeCOGLayer: missing frame", { url, x, y, z, err: result.error });
+        throw result.error;
+      }
+
+      if (result.status === "error") {
+        console.warn("TimeCOGLayer: tile fetch failed", result.error);
+      }
+
       return null;
     };
   }
