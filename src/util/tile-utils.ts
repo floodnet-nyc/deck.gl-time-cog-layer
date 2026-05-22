@@ -152,5 +152,21 @@ export function mapToCoarserZoom(
  * and should be silently ignored.
  */
 export function isMissingTileError(error: unknown): boolean {
-  return error instanceof Error && /^Tile at \(\d+, \d+\) not found$/.test(error.message);
+  return error instanceof Error && (
+    (error as any)?.code === 404 ||
+    /^Tile at \(\d+, \d+\) not found$/.test(error.message));
+}
+
+// TODO: get the exact error to check. Then add missing frame key tracking to the prefetcher like we do for missing tiles.
+// export function isMissingFrameError(error: unknown): boolean {
+//   return error instanceof Error && (
+//     (error as any)?.code === 404 ||
+//     /No matching frame for time/.test(error.message));
+// }
+
+export function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (
+    error.name === "AbortError" || 
+    (error.cause as Error)?.name === "AbortError"
+  ) ;
 }

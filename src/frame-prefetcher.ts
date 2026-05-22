@@ -5,7 +5,7 @@ import type {
   DecoderPool,
 } from "@developmentseed/geotiff";
 import type { SequenceTileCache } from "./sequence-tile-cache.js";
-import { isMissingTileError } from "./util/tile-utils.js";
+import { isAbortError, isMissingTileError } from "./util/tile-utils.js";
 import type { InteractionMode, NormalizedTimeCOGFrame, QualityPolicy, ScoringWeights } from "./types.js";
 import { TaskQueue, taskKey, type TileCoord, type TileTask } from "./util/task-queue.js";
 import {
@@ -382,9 +382,11 @@ export class FramePrefetcher {
         }
       }
     } catch (err) {
-      if ((err as Error)?.name === "AbortError" || ((err as Error)?.cause as Error)?.name === "AbortError") {
+      if (isAbortError(err)) {
         this.abortedTasks += 1;
-      } else if (!isMissingTileError(err)) {
+      } else if (isMissingTileError(err)) {
+        this.missingTileKeys.add(key);
+      } else {
         console.warn("FramePrefetcher: tile fetch failed", err);
       }
     } finally {

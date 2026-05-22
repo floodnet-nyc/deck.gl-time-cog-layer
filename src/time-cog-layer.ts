@@ -44,6 +44,7 @@ import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
 import { buildTileDiagSnapshot } from "./util/tile-diagnostics.js";
 import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
 import { isEqual } from "lodash-es";
+import { isAbortError, isMissingTileError } from "./util/tile-utils.js";
 
 /**
  * Props for {@link TimeCOGLayer}.
@@ -104,7 +105,7 @@ export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps 
   /** Fired when `descriptorMode: 'manifest'` detects a structural mismatch. */
   onDescriptorMismatch?: (frame: NormalizedTimeCOGFrame, reason: string) => void;
   onBufferStateChange?: (state: TimeCOGBufferState) => void;
-  onStats?: (stats: TimeCOGStats) => void;
+  onStats?: (stats: TimeCOGStats, layer: TimeCOGLayer<TFrame>) => void;
   /** Forwarded to the underlying COGLayer for the initial (representative) GeoTIFF. */
   onGeoTIFFLoad?: COGLayerProps["onGeoTIFFLoad"];
   /** Optional callback fired whenever the visible tile set changes. */
@@ -445,28 +446,37 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       }
       tileCache.recordDisplayMiss();
 
-      const result = await registry.decodeTile(
-        { id, url, x, y, z, getTileData },
-        {
-          device: options.device,
-          signal: options.signal,
-          pool: this.props.pool,
-          requestInit,
-        },
-      );
+      try {
+        const result = await registry.decodeTile(
+          { id, url, x, y, z, getTileData },
+          {
+            device: options.device,
+            signal: options.signal,
+            pool: this.props.pool,
+            requestInit,
+          },
+        );
+  
+        if (!result) {
+          return null;
+        }
+  
+        tileCache.put(id, x, y, z, {
+          x, y, z,
+          ...result,
+          quality: "full",
+          origin: "display",
+        });
 
-      if (!result) {
-        return null;
+        return result;
+      } catch (err) {
+        if (isAbortError(err)) {
+        } else if (isMissingTileError(err)) {
+        } else {
+          console.warn("TimeCOGLayer: tile fetch failed", err);
+        }
       }
-
-      tileCache.put(id, x, y, z, {
-        x, y, z,
-        ...result,
-        quality: "full",
-        origin: "display",
-      });
-
-      return result;
+      return null;
     };
   }
 
@@ -665,7 +675,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
 
   private emitState(s: TimeCOGLayerState): void {
     this.props.onBufferStateChange?.(buildBufferState(s.tileCache, s));
-    this.props.onStats?.(buildStats(s.tileCache, s.prefetcher, s));
+    this.props.onStats?.(buildStats(s.tileCache, s.prefetcher, s), this);
   }
 
   private updatePrefetch(snapshot?: {
