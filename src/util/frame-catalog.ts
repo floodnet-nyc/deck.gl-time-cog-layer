@@ -194,8 +194,13 @@ export function resolveFrameForTime(
   catalog: Catalog,
   timeMs: number,
   policy: MissingFramePolicy,
+  excludedFrameIds?: ReadonlySet<string>,
 ): TimeCOGFrameResolution {
-  if (catalog.length === 0) {
+  const selectableCatalog = excludedFrameIds?.size
+    ? catalog.filter((frame) => !excludedFrameIds.has(frame.id))
+    : catalog;
+
+  if (selectableCatalog.length === 0) {
     return {
       targetFrame: null,
       displayFrame: null,
@@ -203,8 +208,8 @@ export function resolveFrameForTime(
     };
   }
 
-  const nearestIndex = findNearestFrameIndex(catalog, timeMs);
-  const targetFrame = nearestIndex >= 0 ? catalog[nearestIndex] ?? null : null;
+  const nearestIndex = findNearestFrameIndex(selectableCatalog, timeMs);
+  const targetFrame = nearestIndex >= 0 ? selectableCatalog[nearestIndex] ?? null : null;
   const exact = targetFrame?.timeMs === timeMs;
 
   if (exact || policy === "nearest") {
@@ -223,11 +228,11 @@ export function resolveFrameForTime(
     };
   }
 
-  const previousIndex = findPreviousFrameIndex(catalog, timeMs);
+  const previousIndex = findPreviousFrameIndex(selectableCatalog, timeMs);
 
   return {
     targetFrame,
-    displayFrame: previousIndex >= 0 ? catalog[previousIndex] ?? null : targetFrame,
+    displayFrame: previousIndex >= 0 ? selectableCatalog[previousIndex] ?? null : targetFrame,
     missing: !exact,
   };
 }

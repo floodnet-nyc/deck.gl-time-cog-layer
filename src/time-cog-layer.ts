@@ -81,6 +81,8 @@ export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps 
   /** Maximum display frame rate during playback in frames per second (0 = unlimited).  Default 0. */
   maxFrameRate?: number;
   missingFramePolicy?: MissingFramePolicy;
+  /** When true, frames that fail GeoTIFF open are temporarily excluded from selection and scheduling. */
+  skipMissingFrames?: boolean;
   bufferPolicy?: TimeCOGBufferPolicy;
   cachePolicy?: TimeCOGCachePolicy;
   qualityPolicy?: QualityPolicy;
@@ -475,6 +477,10 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       if (result.status === "missing-frame") {
         this.state.prefetcher.markMissingFrame(id);
         console.warn("TimeCOGLayer: missing frame", { url, x, y, z, err: result.error });
+        if (this.props.skipMissingFrames) {
+          this.updateFrameState(this.state.catalog);
+          return null;
+        }
         throw result.error;
       }
 
@@ -548,8 +554,12 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     const state = this.state;
     const currentTimeMs = parseTimeValue(this.props.currentTime);
     const playing = this.props.playing ?? false;
+    const effectiveCatalog =
+      this.props.skipMissingFrames && state.prefetcher.missingFrames.size > 0
+        ? catalog.filter((frame) => !state.prefetcher.missingFrames.has(frame.id))
+        : catalog;
     const resolution = resolveFrameForTime(
-      catalog,
+      effectiveCatalog,
       currentTimeMs,
       this.props.missingFramePolicy ?? DEFAULT_MISSING_FRAME_POLICY,
     );
@@ -557,7 +567,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     if (playing && resolution.displayFrame) {
       resolution.displayFrame = applyMaxFrameRateBucking(
         resolution.displayFrame,
-        catalog,
+        effectiveCatalog,
         state.lastDisplayedFrameId,
         this.props.maxFrameRate ?? 0,
         this.props.playbackRate ?? 0,
@@ -571,11 +581,11 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
         : resolution.targetFrame;
 
     const targetIndex = prefetchAnchorFrame
-      ? findNearestFrameIndex(catalog, prefetchAnchorFrame.timeMs)
+      ? findNearestFrameIndex(effectiveCatalog, prefetchAnchorFrame.timeMs)
       : -1;
 
     const scheduledFrames = scheduleFrameWindow(
-      catalog,
+      effectiveCatalog,
       targetIndex,
       this.props.bufferPolicy,
       this.props.playbackRate,

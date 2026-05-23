@@ -64,6 +64,25 @@ test("resolves missing frame policies", () => {
   assert.equal(resolveFrameForTime(catalog, missingTime, "transparent").displayFrame, null);
 });
 
+test("resolveFrameForTime can skip known-missing frames", () => {
+  const catalog = normalizeFrameCatalog([
+    { id: "f0", time: "2025-10-30T00:00:00Z", url: "https://example.test/000.tif" },
+    { id: "f1", time: "2025-10-30T00:02:00Z", url: "https://example.test/002.tif" },
+    { id: "f2", time: "2025-10-30T00:04:00Z", url: "https://example.test/004.tif" },
+  ]);
+
+  const missingIds = new Set(["f1"]);
+
+  assert.equal(
+    resolveFrameForTime(catalog, Date.parse("2025-10-30T00:02:00Z"), "nearest", missingIds).displayFrame?.id,
+    "f0",
+  );
+  assert.equal(
+    resolveFrameForTime(catalog, Date.parse("2025-10-30T00:03:00Z"), "hold-last", missingIds).displayFrame?.id,
+    "f0",
+  );
+});
+
 test("schedules a playback-aware frame window", () => {
   const catalog = normalizeFrameCatalog([
     { time: 0, url: "/0.tif" },
