@@ -39,6 +39,28 @@ const FORWARD_BUFFER_WHEN_PAUSED = 8;
 const FORWARD_BUFFER_WHEN_PLAYING = 16;
 const MISSING_FRAMES_WATERMARK_AGE_MS = 60 * 60 * 1000;
 
+
+type PrecipFrame = number;
+
+type DemoUI = {
+  deckRoot: HTMLDivElement;
+  playButton: HTMLButtonElement;
+  speedSelect: HTMLSelectElement;
+  frameInput: HTMLInputElement;
+  timeOutput: HTMLOutputElement;
+  statsOutput: HTMLOutputElement;
+  diagnosticsCanvas: HTMLCanvasElement;
+};
+
+type DemoState = {
+  currentFrameIndex: number;
+  playing: boolean;
+  playbackRate: number;
+  lastFrameTime: number | null;
+  animFrameId: number | null;
+  timeLayer: TimeCOGLayer<PrecipFrame> | null;
+};
+
 /* ----------------------------- Tile Functions ----------------------------- */
 
 type PrecipTileData = MinimalTileData & {
@@ -284,27 +306,6 @@ const formatUtcTimestamp = (timeMs: number) => {
     time.getUTCFullYear(), pad2(time.getUTCMonth() + 1), pad2(time.getUTCDate()), "T", 
     pad2(time.getUTCHours()), pad2(time.getUTCMinutes()), pad2(time.getUTCSeconds()), "Z",
   ].join("");
-};
-
-type PrecipFrame = number;
-
-type DemoUI = {
-  deckRoot: HTMLDivElement;
-  playButton: HTMLButtonElement;
-  speedSelect: HTMLSelectElement;
-  frameInput: HTMLInputElement;
-  timeOutput: HTMLOutputElement;
-  statsOutput: HTMLOutputElement;
-  diagnosticsCanvas: HTMLCanvasElement;
-};
-
-type DemoState = {
-  currentFrameIndex: number;
-  playing: boolean;
-  playbackRate: number;
-  lastFrameTime: number | null;
-  animFrameId: number | null;
-  timeLayer: TimeCOGLayer<PrecipFrame> | null;
 };
 
 /* ----------------------------------- UI ----------------------------------- */
