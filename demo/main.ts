@@ -8,16 +8,38 @@ import type { RasterModule } from "@developmentseed/deck.gl-raster/gpu-modules";
 import { CreateTexture, MaskTexture } from "@developmentseed/deck.gl-raster/gpu-modules";
 import type { GeoTIFF, Overview } from "@developmentseed/geotiff";
 import type { Texture } from "@luma.gl/core";
-import type { NormalizedTimeCOGFrame } from "../src/index.js";
-import { TimeCOGLayer, findNearestFrameIndex, normalizeFrameCatalog } from "../src/index.js";
+import { TimeCOGLayer, type TimeCOGStats } from "../src/index.js";
 import { renderTileDiagnostics } from "../src/util/tile-diagnostics.js";
 import "./style.css";
+
+/* --------------------------------- Options -------------------------------- */
 
 const DISPLAY_OPACITY = 0.86;
 const PRECIP_MAX_RAW_VALUE = 200;
 const PLAY_SPEEDS = [0.5, 1, 2, 5, 10, 30, 45, 60, 120].map((s) => s * 60);
 const DEFAULT_SPEED = 30 * 60;
+const COG_INTERVAL_MS = import.meta.env.VITE_COG_INTERVAL_MS
+  ? Number(import.meta.env.VITE_COG_INTERVAL_MS)
+  : 2 * 60 * 1000;
+const COG_BASE_URL = `${import.meta.env.VITE_COG_BASE_URL || "/cogs/"}`;
+const DEFAULT_FROM = "2025-10-30T12:00:00Z";
+const DEFAULT_TO = "2025-10-31T12:00:00Z";
+const BASEMAP_URL = "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png";
+const INITIAL_VIEW_STATE = {
+  longitude: -74.006,
+  latitude: 40.7128,
+  zoom: 7,
+  pitch: 0,
+  bearing: 0,
+} as const;
+const MAX_FRAME_RATE = 15;
+const MAX_NETWORK_REQUESTS = 16;
+const BACKWARD_BUFFER_WHEN_PAUSED = 2;
+const FORWARD_BUFFER_WHEN_PAUSED = 8;
+const FORWARD_BUFFER_WHEN_PLAYING = 16;
+const MISSING_FRAMES_WATERMARK_AGE_MS = 60 * 60 * 1000;
 
+/* ----------------------------- Tile Functions ----------------------------- */
 
 type PrecipTileData = MinimalTileData & {
   byteLength: number;
@@ -90,7 +112,7 @@ function padRowsToAlignment(
   };
 }
 
-async function getPrecipTileData(
+async function getTileData(
   image: GeoTIFF | Overview,
   { device, x, y, signal, pool }: GetTileDataOptions,
 ): Promise<PrecipTileData> {
@@ -146,7 +168,7 @@ async function getPrecipTileData(
   };
 }
 
-function renderPrecipTile(data: PrecipTileData): RenderTileResult {
+function renderTile(data: PrecipTileData): RenderTileResult {
   const renderPipeline: RasterModule[] = [
     {
       module: CreateTexture,
@@ -171,57 +193,89 @@ function renderPrecipTile(data: PrecipTileData): RenderTileResult {
   return { renderPipeline };
 }
 
-const app = document.querySelector<HTMLDivElement>("#app");
 
-if (!app) {
-  throw new Error("Missing #app element");
+
+function createTimeLayer(frames: number[], { currentFrameIndex, playing, playbackRate }: DemoState): TimeCOGLayer<PrecipFrame> | null {
+  const currentTimeMs = frames[currentFrameIndex];
+
+  if (currentTimeMs === undefined) {
+    return null;
+  }
+
+  return new TimeCOGLayer({
+    id: "time-cog-layer-demo",
+    data: frames,
+    getTime: (timeMs) => timeMs,
+    getUrl: (timeMs) => buildPrecipCogUrl(timeMs),
+    currentTime: currentTimeMs,
+    playing,
+    playbackRate,
+    getTileData,
+    renderTile,
+    opacity: DISPLAY_OPACITY,
+    missingFramePolicy: "nearest",
+    maxFrameRate: MAX_FRAME_RATE,
+    qualityPolicy: {
+      lowResFirst: false,
+    },
+    bufferPolicy: {
+      backwardFrames: playing ? 0 : BACKWARD_BUFFER_WHEN_PAUSED,
+      forwardFrames: playing ? FORWARD_BUFFER_WHEN_PLAYING : FORWARD_BUFFER_WHEN_PAUSED,
+    },
+    schedulerPolicy: {
+      maxNetworkRequests: MAX_NETWORK_REQUESTS,
+      frameRateSnap: "slower",
+    },
+    skipMissingFrames: true,
+    missingFramesWatermark: Date.now() - MISSING_FRAMES_WATERMARK_AGE_MS,
+    scrubBucketingPolicy: {
+      enabled: true,
+    },
+    onStats: (stats: TimeCOGStats, layer: TimeCOGLayer<PrecipFrame>) => {
+      const wastedKb = Math.round(stats.prefetchedWastedBytes / 1024);
+      const useRate = Math.round(stats.prefetchedUseRate * 100);
+      const wasteRate = Math.round(stats.prefetchedWasteRate * 100);
+      ui.statsOutput.value =
+        `${stats.readyFrameCount}/${stats.frameCount} ready, ` +
+        `${stats.scheduledFrameCount} scheduled | ` +
+        `prefetch used: ${useRate}% | ` +
+        `waste: ${stats.prefetchedWastedCount} (${wasteRate}%, ${wastedKb} kB)`;
+    },
+  });
 }
 
-app.innerHTML = `
-  <div id="deck"></div>
-  <aside id="controls">
-    <div id="playback">
-      <button id="play" type="button" title="Play / Pause">&#9654;</button>
-      <select id="speed">
-        ${PLAY_SPEEDS.map((s) => `<option value="${s}"${s === DEFAULT_SPEED ? " selected" : ""}>${s/60}min/s</option>`).join("")}
-      </select>
-      <output id="stats"></output>
-      <output id="time"></output>
-    </div>
-    <label>
-      <input id="frame" type="range" min="0" max="0" value="0" />
-    </label>
-    <canvas id="diagnostics" width="480" height="150"></canvas>
-  </aside>
-`;
+function renderDiagnostics(): void {
+  if (!state.timeLayer) {
+    return;
+  }
 
-const playButton = document.querySelector<HTMLButtonElement>("#play");
-const speedSelect = document.querySelector<HTMLSelectElement>("#speed");
-const frameInput = document.querySelector<HTMLInputElement>("#frame");
-const timeOutput = document.querySelector<HTMLOutputElement>("#time");
-const statsOutput = document.querySelector<HTMLOutputElement>("#stats");
-const diagnosticsCanvas = document.querySelector<HTMLCanvasElement>("#diagnostics");
+  try {
+    const snapshot = state.timeLayer.getDiagnosticSnapshot();
 
-if (!playButton || !speedSelect || !frameInput || !timeOutput || !statsOutput) {
-  throw new Error("Missing demo controls");
+    if (snapshot.frameIds.length > 0) {
+      renderTileDiagnostics(ui.diagnosticsCanvas, snapshot);
+    }
+  } catch {
+    // Layer not yet initialized; retry on the next render pass.
+  }
 }
 
-const range = (from: number, to: number, interval: number) => {
+
+/* --------------------------- Catalog Generation --------------------------- */
+
+
+const range = (from: number, to: number, interval: number): number[] => {
   const result = [];
-  for (let i = from; i <= to; i += interval) { result.push(i); }
+  for (let i = from; i <= to; i += interval) {
+    result.push(i);
+  }
   return result;
 };
 
-const COG_BASE_URL = `${import.meta.env.VITE_COG_BASE_URL || "/cogs/"}`;
-const COG_INTERVAL_MS = import.meta.env.VITE_COG_INTERVAL_MS ? Number(import.meta.env.VITE_COG_INTERVAL_MS) : 2 * 60 * 1000; // 2 minutes
 const buildPrecipCogUrl = (timeMs: number, baseUrl: string = COG_BASE_URL) => `${baseUrl}${formatUtcTimestamp(timeMs)}.tif`;
-const buildFrameCatalog = (fromTimeMs: number, toTimeMs: number, intervalMs: number = COG_INTERVAL_MS) => {
-  return range(fromTimeMs, toTimeMs, intervalMs).map((timeMs) => ({
-    id: `precipitation-cog-${timeMs}`,
-    time: timeMs,
-    url: buildPrecipCogUrl(timeMs),
-  }));
-}
+const buildFrameTimes = (fromTimeMs: number, toTimeMs: number, intervalMs: number = COG_INTERVAL_MS) => {
+  return range(fromTimeMs, toTimeMs, intervalMs);
+};
 
 const pad2 = (value: number) => String(value).padStart(2, "0");
 const formatUtcTimestamp = (timeMs: number) => {
@@ -232,131 +286,111 @@ const formatUtcTimestamp = (timeMs: number) => {
   ].join("");
 };
 
-const getTime = (f: PrecipFeature) => f.time;
-const getUrl  = (f: PrecipFeature) => f.url;
+type PrecipFrame = number;
 
-type PrecipFeature = (ReturnType<typeof buildFrameCatalog>)[number];
+type DemoUI = {
+  deckRoot: HTMLDivElement;
+  playButton: HTMLButtonElement;
+  speedSelect: HTMLSelectElement;
+  frameInput: HTMLInputElement;
+  timeOutput: HTMLOutputElement;
+  statsOutput: HTMLOutputElement;
+  diagnosticsCanvas: HTMLCanvasElement;
+};
 
+type DemoState = {
+  currentFrameIndex: number;
+  playing: boolean;
+  playbackRate: number;
+  lastFrameTime: number | null;
+  animFrameId: number | null;
+  timeLayer: TimeCOGLayer<PrecipFrame> | null;
+};
 
-// const { features } = index;
-const query = new URLSearchParams(window.location.search);
-// const DEFAULT_FROM = "2026-05-20T00:00:00Z";
-// const DEFAULT_TO = "2026-05-21T00:00:00Z";
-const DEFAULT_FROM = "2025-10-30T12:00:00Z";
-const DEFAULT_TO = "2025-10-31T12:00:00Z";
-const fromTime = query.get("from") ? Date.parse(query.get("from")!) : new Date(DEFAULT_FROM).getTime();
-const toTime = query.get("to") ? Date.parse(query.get("to")!) : new Date(DEFAULT_TO).getTime();
-const features = buildFrameCatalog(fromTime, toTime);
-const catalog = normalizeFrameCatalog(features, getTime, getUrl);
-let selectedFrame = catalog[0] as NormalizedTimeCOGFrame | undefined;
+/* ----------------------------------- UI ----------------------------------- */
 
-frameInput.max = String(Math.max(0, catalog.length - 1));
+function requireElement<T extends Element>(selector: string): T {
+  const element = document.querySelector<T>(selector);
+  if (!element) {
+    throw new Error(`Missing ${selector}`);
+  }
+  return element;
+}
 
-let playing = false;
-let playbackRate = DEFAULT_SPEED;
-let lastFrameTime: number | null = null;
-let lastFrameIndex = 0;
-let animFrameId: number | null = null;
+function createDemoUI(): DemoUI {
+  const app = requireElement<HTMLDivElement>("#app");
 
-const deck = new Deck({
-  parent: document.querySelector<HTMLDivElement>("#deck") ?? undefined,
-  initialViewState: {
-    longitude: -74.006,
-    latitude: 40.7128,
-    zoom: 7,
-    pitch: 0,
-    bearing: 0,
-  },
-  controller: true,
-  layers: [],
-});
+  app.innerHTML = `
+    <div id="deck"></div>
+    <aside id="controls">
+      <div id="playback">
+        <button id="play" type="button" title="Play / Pause">&#9654;</button>
+        <select id="speed">
+          ${PLAY_SPEEDS.map((s) => `<option value="${s}"${s === DEFAULT_SPEED ? " selected" : ""}>${s / 60}min/s</option>`).join("")}
+        </select>
+        <output id="stats"></output>
+        <output id="time"></output>
+      </div>
+      <label>
+        <input id="frame" type="range" min="0" max="0" value="0" />
+      </label>
+      <canvas id="diagnostics" width="480" height="150"></canvas>
+    </aside>
+  `;
 
-let timeLayer: TimeCOGLayer<PrecipFeature> | null = null;
+  return {
+    deckRoot: requireElement<HTMLDivElement>("#deck"),
+    playButton: requireElement<HTMLButtonElement>("#play"),
+    speedSelect: requireElement<HTMLSelectElement>("#speed"),
+    frameInput: requireElement<HTMLInputElement>("#frame"),
+    timeOutput: requireElement<HTMLOutputElement>("#time"),
+    statsOutput: requireElement<HTMLOutputElement>("#stats"),
+    diagnosticsCanvas: requireElement<HTMLCanvasElement>("#diagnostics"),
+  };
+}
 
-function renderDiagnostics(): void {
-  if (!timeLayer || !diagnosticsCanvas) {
-    return;
+function getCurrentTimeMs(): number | undefined {
+  return frames[state.currentFrameIndex];
+}
+
+function setCurrentFrameIndex(index: number): void {
+  state.currentFrameIndex = index;
+  ui.frameInput.value = String(index);
+}
+
+function wrapTime(timeMs: number): number {
+  if (timeMs >= frames[frames.length - 1]) {
+    return frames[0];
   }
 
-  try {
-    const snapshot = timeLayer.getDiagnosticSnapshot();
-
-    if (snapshot.frameIds.length > 0) {
-      renderTileDiagnostics(diagnosticsCanvas, snapshot);
-    }
-  } catch {
-    // Layer not yet initialized — retry next frame
+  if (timeMs < frames[0]) {
+    return frames[frames.length - 1];
   }
+
+  return timeMs;
 }
 
 function render(): void {
-  if (!selectedFrame) {
+  if (frames.length === 0) {
     return;
   }
 
-  timeOutput && (timeOutput.value = new Date(selectedFrame.timeMs).toISOString());
+  const currentTimeMs = getCurrentTimeMs();
+  ui.timeOutput.value = currentTimeMs === undefined ? "" : new Date(currentTimeMs).toISOString();
 
-  timeLayer = new TimeCOGLayer({
-    id: "time-cog-layer-demo",
-    data: features,
-    getTime,
-    getUrl,
-    currentTime: selectedFrame.timeMs,
-    playing,
-    playbackRate,
-    getTileData: getPrecipTileData,
-    renderTile: renderPrecipTile,
-    opacity: DISPLAY_OPACITY,
-    missingFramePolicy: "nearest",
-    maxFrameRate: 15,
-    qualityPolicy: {
-      lowResFirst: false,
-    },
-    bufferPolicy: {
-      backwardFrames: playing ? 0 : 2,
-      forwardFrames: playing ? 16 : 8,
-    },
-    schedulerPolicy: {
-      maxNetworkRequests: 16,
-      frameRateSnap: 'slower',
-    },
-    skipMissingFrames: true,
-    missingFramesWatermark: Date.now() - 60 * 60 * 1000, // 1 hour ago
-    // cachePolicy: {
-    //   maxFrames: 120,
-    // },
-    scrubBucketingPolicy: {
-      enabled: true,
-    },
-    onFrameDisplayed: (frame) => {
-      // console.log("Displayed frame", frame.id);
-      renderDiagnostics();
-    },
-    onStats: (stats) => {
-      const wastedKb = Math.round(stats.prefetchedWastedBytes / 1024);
-      const useRate = Math.round(stats.prefetchedUseRate * 100);
-      const wasteRate = Math.round(stats.prefetchedWasteRate * 100);
-      statsOutput && (statsOutput.value =
-        `${stats.readyFrameCount}/${stats.frameCount} ready, ` +
-        `${stats.scheduledFrameCount} scheduled | ` +
-        `prefetch used: ${useRate}% | ` +
-        `waste: ${stats.prefetchedWastedCount} (${wasteRate}%, ${wastedKb} kB)`);
-    },
-  });
+  state.timeLayer = createTimeLayer(frames, state);
 
   deck.setProps({
     layers: [
       new TileLayer({
         id: "basemap",
-        data: "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        data: BASEMAP_URL,
         tileSize: 256,
         minZoom: 0,
         maxZoom: 19,
         renderSubLayers: (props) => {
           const {
-            // bbox: { west, south, east, north },
-            // [mins, maxs]
-            boundingBox: [[west, south], [east, north]], //{ west, south, east, north },
+            boundingBox: [[west, south], [east, north]],
           } = props.tile;
           return new BitmapLayer(props, {
             data: undefined,
@@ -365,86 +399,122 @@ function render(): void {
           });
         },
       }),
-      timeLayer,
+      ...(state.timeLayer ? [state.timeLayer] : []),
     ],
   });
 
   requestAnimationFrame(() => renderDiagnostics());
 }
 
-function updateSliderFromTime(timeMs: number): void {
-  frameInput && (frameInput.value = String(findNearestFrameIndex(catalog, timeMs)));
+
+const ui = createDemoUI();
+const query = new URLSearchParams(window.location.search);
+const fromTime = query.get("from") ? Date.parse(query.get("from")!) : new Date(DEFAULT_FROM).getTime();
+const toTime = query.get("to") ? Date.parse(query.get("to")!) : new Date(DEFAULT_TO).getTime();
+const frames = buildFrameTimes(fromTime, toTime);
+const state: DemoState = {
+  currentFrameIndex: 0,
+  playing: false,
+  playbackRate: DEFAULT_SPEED,
+  lastFrameTime: null,
+  animFrameId: null,
+  timeLayer: null,
+};
+
+ui.frameInput.max = String(Math.max(0, frames.length - 1));
+
+const deck = new Deck({
+  parent: ui.deckRoot,
+  initialViewState: INITIAL_VIEW_STATE,
+  controller: true,
+  layers: [],
+});
+
+
+/* -------------------------------- Playback -------------------------------- */
+
+function findNearestFrameIndexForTime(targetTimeMs: number): number {
+  let nearestIndex = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (let index = 0; index < frames.length; index += 1) {
+    const distance = Math.abs(frames[index] - targetTimeMs);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = index;
+    }
+  }
+
+  return nearestIndex;
 }
 
 function startPlayback(): void {
-  playing = true;
-  lastFrameTime = null;
-  playButton && (playButton.innerHTML = "&#9646;&#9646;");
+  state.playing = true;
+  state.lastFrameTime = null;
+  ui.playButton.innerHTML = "&#9646;&#9646;";
   render();
 
   function tick(now: number): void {
-    if (!playing) return;
+    const currentTimeMs = getCurrentTimeMs();
 
-    if (lastFrameTime !== null) {
-      const deltaMs = now - lastFrameTime;
-      const advanceMs = deltaMs * playbackRate;
+    if (!state.playing || currentTimeMs === undefined) {
+      return;
+    }
 
-      if (selectedFrame) {
-        let newTimeMs = selectedFrame.timeMs + advanceMs;
+    if (state.lastFrameTime !== null) {
+      const deltaMs = now - state.lastFrameTime;
+      const advanceMs = deltaMs * state.playbackRate;
+      const nextTimeMs = wrapTime(currentTimeMs + advanceMs);
+      const nearestIndex = findNearestFrameIndexForTime(nextTimeMs);
 
-        if (newTimeMs >= catalog[catalog.length - 1].timeMs) {
-          newTimeMs = catalog[0].timeMs;
-        } else if (newTimeMs < catalog[0].timeMs) {
-          newTimeMs = catalog[catalog.length - 1].timeMs;
-        }
-
-        const nearestIndex = findNearestFrameIndex(catalog, newTimeMs);
-        selectedFrame = catalog[nearestIndex];
-        if (nearestIndex !== lastFrameIndex) {
-          updateSliderFromTime(newTimeMs);
-          render();
-          lastFrameTime = now;
-        }
-        lastFrameIndex = nearestIndex;
+      if (nearestIndex !== state.currentFrameIndex) {
+        setCurrentFrameIndex(nearestIndex);
+        render();
+        state.lastFrameTime = now;
       }
     } else {
-      lastFrameTime = now;
+      state.lastFrameTime = now;
     }
-    animFrameId = requestAnimationFrame(tick);
+
+    state.animFrameId = requestAnimationFrame(tick);
   }
 
-  animFrameId = requestAnimationFrame(tick);
+  state.animFrameId = requestAnimationFrame(tick);
 }
 
 function stopPlayback(): void {
-  playing = false;
-  playButton && (playButton.innerHTML = "&#9654;");
-  if (animFrameId !== null) {
-    cancelAnimationFrame(animFrameId);
-    animFrameId = null;
+  state.playing = false;
+  ui.playButton.innerHTML = "&#9654;";
+
+  if (state.animFrameId !== null) {
+    cancelAnimationFrame(state.animFrameId);
+    state.animFrameId = null;
   }
+
   render();
 }
 
-playButton.addEventListener("click", () => {
-  if (playing) {
+ui.playButton.addEventListener("click", () => {
+  if (state.playing) {
     stopPlayback();
   } else {
     startPlayback();
   }
 });
 
-speedSelect.addEventListener("change", () => {
-  playbackRate = Number(speedSelect.value);
-  if (playing) {
-    lastFrameTime = null;
+ui.speedSelect.addEventListener("change", () => {
+  state.playbackRate = Number(ui.speedSelect.value);
+  if (state.playing) {
+    state.lastFrameTime = null;
     render();
   }
 });
 
-frameInput.addEventListener("input", () => {
-  selectedFrame = catalog[Number(frameInput.value)];
+ui.frameInput.addEventListener("input", () => {
+  setCurrentFrameIndex(Number(ui.frameInput.value));
   render();
 });
 
 render();
+
+
