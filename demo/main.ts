@@ -14,7 +14,6 @@ import "./style.css";
 
 /* --------------------------------- Options -------------------------------- */
 
-const DISPLAY_OPACITY = 0.86;
 const PRECIP_MAX_RAW_VALUE = 200;
 const PLAY_SPEEDS = [0.5, 1, 2, 5, 10, 30, 45, 60, 120].map((s) => s * 60);
 const DEFAULT_SPEED = 30 * 60;
@@ -32,25 +31,9 @@ const INITIAL_VIEW_STATE = {
   pitch: 0,
   bearing: 0,
 } as const;
-const MAX_FRAME_RATE = 15;
-const MAX_NETWORK_REQUESTS = 16;
-const BACKWARD_BUFFER_WHEN_PAUSED = 2;
-const FORWARD_BUFFER_WHEN_PAUSED = 8;
-const FORWARD_BUFFER_WHEN_PLAYING = 16;
-const MISSING_FRAMES_WATERMARK_AGE_MS = 60 * 60 * 1000;
 
 
-type PrecipFrame = number;
-
-type DemoUI = {
-  deckRoot: HTMLDivElement;
-  playButton: HTMLButtonElement;
-  speedSelect: HTMLSelectElement;
-  frameInput: HTMLInputElement;
-  timeOutput: HTMLOutputElement;
-  statsOutput: HTMLOutputElement;
-  diagnosticsCanvas: HTMLCanvasElement;
-};
+type CatalogFrame = number;
 
 type DemoState = {
   currentFrameIndex: number;
@@ -58,7 +41,7 @@ type DemoState = {
   playbackRate: number;
   lastFrameTime: number | null;
   animFrameId: number | null;
-  timeLayer: TimeCOGLayer<PrecipFrame> | null;
+  timeLayer: TimeCOGLayer<CatalogFrame> | null;
 };
 
 /* ----------------------------- Tile Functions ----------------------------- */
@@ -216,44 +199,39 @@ function renderTile(data: PrecipTileData): RenderTileResult {
 }
 
 
+function createTimeLayer(frames: number[], { currentFrameIndex, playing, playbackRate }: DemoState): TimeCOGLayer<CatalogFrame> | null {
+  const currentTime = frames[currentFrameIndex];
 
-function createTimeLayer(frames: number[], { currentFrameIndex, playing, playbackRate }: DemoState): TimeCOGLayer<PrecipFrame> | null {
-  const currentTimeMs = frames[currentFrameIndex];
-
-  if (currentTimeMs === undefined) {
-    return null;
-  }
-
-  return new TimeCOGLayer({
+  return currentTime == undefined ? null : new TimeCOGLayer({
     id: "time-cog-layer-demo",
     data: frames,
     getTime: (timeMs) => timeMs,
-    getUrl: (timeMs) => buildPrecipCogUrl(timeMs),
-    currentTime: currentTimeMs,
+    getUrl: (timeMs: number) => `${COG_BASE_URL}${formatUtcTimestamp(timeMs)}.tif`,
+    currentTime,
     playing,
     playbackRate,
     getTileData,
     renderTile,
-    opacity: DISPLAY_OPACITY,
+    opacity: 0.86,
     missingFramePolicy: "nearest",
-    maxFrameRate: MAX_FRAME_RATE,
+    maxFrameRate: 15,
     qualityPolicy: {
       lowResFirst: false,
     },
     bufferPolicy: {
-      backwardFrames: playing ? 0 : BACKWARD_BUFFER_WHEN_PAUSED,
-      forwardFrames: playing ? FORWARD_BUFFER_WHEN_PLAYING : FORWARD_BUFFER_WHEN_PAUSED,
+      backwardFrames: playing ? 0 : 2,
+      forwardFrames: playing ? 16 : 8,
     },
     schedulerPolicy: {
-      maxNetworkRequests: MAX_NETWORK_REQUESTS,
+      maxNetworkRequests: 16,
       frameRateSnap: "slower",
     },
     skipMissingFrames: true,
-    missingFramesWatermark: Date.now() - MISSING_FRAMES_WATERMARK_AGE_MS,
+    missingFramesWatermark: Date.now() - 60 * 60 * 1000,
     scrubBucketingPolicy: {
       enabled: true,
     },
-    onStats: (stats: TimeCOGStats, layer: TimeCOGLayer<PrecipFrame>) => {
+    onStats: (stats: TimeCOGStats, layer: TimeCOGLayer<CatalogFrame>) => {
       const wastedKb = Math.round(stats.prefetchedWastedBytes / 1024);
       const useRate = Math.round(stats.prefetchedUseRate * 100);
       const wasteRate = Math.round(stats.prefetchedWasteRate * 100);
@@ -288,15 +266,8 @@ function renderDiagnostics(): void {
 
 const range = (from: number, to: number, interval: number): number[] => {
   const result = [];
-  for (let i = from; i <= to; i += interval) {
-    result.push(i);
-  }
+  for (let i = from; i <= to; i += interval) { result.push(i); }
   return result;
-};
-
-const buildPrecipCogUrl = (timeMs: number, baseUrl: string = COG_BASE_URL) => `${baseUrl}${formatUtcTimestamp(timeMs)}.tif`;
-const buildFrameTimes = (fromTimeMs: number, toTimeMs: number, intervalMs: number = COG_INTERVAL_MS) => {
-  return range(fromTimeMs, toTimeMs, intervalMs);
 };
 
 const pad2 = (value: number) => String(value).padStart(2, "0");
@@ -310,16 +281,16 @@ const formatUtcTimestamp = (timeMs: number) => {
 
 /* ----------------------------------- UI ----------------------------------- */
 
-function requireElement<T extends Element>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (!element) {
-    throw new Error(`Missing ${selector}`);
-  }
-  return element;
-}
-
-function createDemoUI(): DemoUI {
-  const app = requireElement<HTMLDivElement>("#app");
+function createDemoUI(): {
+  deckRoot: HTMLDivElement;
+  playButton: HTMLButtonElement;
+  speedSelect: HTMLSelectElement;
+  frameInput: HTMLInputElement;
+  timeOutput: HTMLOutputElement;
+  statsOutput: HTMLOutputElement;
+  diagnosticsCanvas: HTMLCanvasElement;
+} {
+  const app = document.querySelector<HTMLDivElement>("#app")!;
 
   app.innerHTML = `
     <div id="deck"></div>
@@ -340,13 +311,13 @@ function createDemoUI(): DemoUI {
   `;
 
   return {
-    deckRoot: requireElement<HTMLDivElement>("#deck"),
-    playButton: requireElement<HTMLButtonElement>("#play"),
-    speedSelect: requireElement<HTMLSelectElement>("#speed"),
-    frameInput: requireElement<HTMLInputElement>("#frame"),
-    timeOutput: requireElement<HTMLOutputElement>("#time"),
-    statsOutput: requireElement<HTMLOutputElement>("#stats"),
-    diagnosticsCanvas: requireElement<HTMLCanvasElement>("#diagnostics"),
+    deckRoot: document.querySelector<HTMLDivElement>("#deck")!,
+    playButton: document.querySelector<HTMLButtonElement>("#play")!,
+    speedSelect: document.querySelector<HTMLSelectElement>("#speed")!,
+    frameInput: document.querySelector<HTMLInputElement>("#frame")!,
+    timeOutput: document.querySelector<HTMLOutputElement>("#time")!,
+    statsOutput: document.querySelector<HTMLOutputElement>("#stats")!,
+    diagnosticsCanvas: document.querySelector<HTMLCanvasElement>("#diagnostics")!,
   };
 }
 
@@ -357,18 +328,6 @@ function getCurrentTimeMs(): number | undefined {
 function setCurrentFrameIndex(index: number): void {
   state.currentFrameIndex = index;
   ui.frameInput.value = String(index);
-}
-
-function wrapTime(timeMs: number): number {
-  if (timeMs >= frames[frames.length - 1]) {
-    return frames[0];
-  }
-
-  if (timeMs < frames[0]) {
-    return frames[frames.length - 1];
-  }
-
-  return timeMs;
 }
 
 function render(): void {
@@ -412,7 +371,7 @@ const ui = createDemoUI();
 const query = new URLSearchParams(window.location.search);
 const fromTime = query.get("from") ? Date.parse(query.get("from")!) : new Date(DEFAULT_FROM).getTime();
 const toTime = query.get("to") ? Date.parse(query.get("to")!) : new Date(DEFAULT_TO).getTime();
-const frames = buildFrameTimes(fromTime, toTime);
+const frames = range(fromTime, toTime, COG_INTERVAL_MS);
 const state: DemoState = {
   currentFrameIndex: 0,
   playing: false,
@@ -465,7 +424,8 @@ function startPlayback(): void {
     if (state.lastFrameTime !== null) {
       const deltaMs = now - state.lastFrameTime;
       const advanceMs = deltaMs * state.playbackRate;
-      const nextTimeMs = wrapTime(currentTimeMs + advanceMs);
+      const nextTimeMsRaw = currentTimeMs + advanceMs;
+      const nextTimeMs = nextTimeMsRaw >= frames[frames.length - 1] ? frames[0] : nextTimeMsRaw < frames[0] ? frames[frames.length - 1] : nextTimeMsRaw;
       const nearestIndex = findNearestFrameIndexForTime(nextTimeMs);
 
       if (nearestIndex !== state.currentFrameIndex) {
