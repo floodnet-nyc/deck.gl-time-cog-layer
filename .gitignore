@@ -10,6 +10,7 @@ lerna-debug.log*
 public/cogs/*.tif
 shh*/
 
+.env
 
 node_modules
 dist
