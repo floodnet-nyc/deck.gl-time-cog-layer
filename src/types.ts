@@ -14,6 +14,7 @@ export type TimeValue = string | number | Date;
  * - `"transparent"`: show nothing (returns `null` display frame).
  */
 export type MissingFramePolicy = "hold-last" | "nearest" | "skip" | "transparent";
+export type BucketSnapPolicy = "off" | "on" | "slower" | "faster";
 
 /**
  * A single entry in the time → COG URL frame catalog.
@@ -94,6 +95,24 @@ export type QualityPolicy = {
   fullResUpgradeIdleMs?: number;
 };
 
+/**
+ * Adaptive temporal bucketing used during high-speed scrubbing.
+ *
+ * The layer estimates scrub velocity in timeline-ms / wall-ms and
+ * widens the effective temporal bucket so the display and prefetch
+ * paths do not churn through raw frames faster than the interaction
+ * can perceptibly show them.
+ */
+export type ScrubBucketingPolicy = {
+  enabled?: boolean;
+  targetResponseHz?: number;
+  minBucketMs?: number;
+  maxBucketMs?: number;
+  smoothingAlpha?: number;
+  hysteresisRatio?: number;
+  snap?: BucketSnapPolicy;
+};
+
 /** Detected playback interaction state, derived from prop changes. */
 export type InteractionMode = 'idle' | 'seeking' | 'scrubbing' | 'playing';
 
@@ -165,7 +184,7 @@ export type SchedulerPolicy = {
    *   which can exceed the requested `maxFrameRate` cap in exchange
    *   for a more source-aligned cadence.
    */
-  frameRateSnap?: "off" | "on" | "slower" | "faster";
+  frameRateSnap?: BucketSnapPolicy;
   /**
    * Penalty applied per multiscale temporal level when frame-rate-aware
    * scheduling is active. Higher values keep coarse future buckets from

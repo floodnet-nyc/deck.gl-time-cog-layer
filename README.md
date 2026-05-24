@@ -127,6 +127,7 @@ updateTriggers: {
 | `bufferPolicy` | `object` | `{ backwardFrames: 2, forwardFrames: 6 }` | How many frames to prefetch ahead / retain behind |
 | `cachePolicy` | `object` | `{}` | Tile cache limits — `memoryBytes`, `maxFrames`, `maxTiles` |
 | `qualityPolicy` | `object` | `{}` | Progressive loading behaviour — `lowResFirst`, `previewOverviewBias`, `scrubOverviewBias`, `fullResUpgradeIdleMs` |
+| `scrubBucketingPolicy` | `object` | `{ enabled: false }` | Adaptive temporal bucketing during high-speed scrubbing so display selection and prefetch anchor to coarser time bins instead of every raw frame |
 | `schedulerPolicy` | `object` | `{ maxNetworkRequests: 4 }` | Prefetch concurrency (`maxNetworkRequests`, `maxDecodeTasks`, `maxGpuUploadsPerFrame`), optional cadence snapping (`frameRateSnap`), multiscale temporal bias (`multiscaleLevelPenalty`), and optional scoring weights |
 | `descriptorMode` | `"reuse-first" \| "manifest"` | `"reuse-first"` | How the shared tileset descriptor is determined |
 | `descriptorManifest` | `object` | — | Pre-declared GeoTIFF structure (required with `descriptorMode: "manifest"`) |
@@ -231,6 +232,26 @@ type SchedulerPolicy = {
 - `off`: use the exact requested playback bucket width.
 - `on` / `slower`: widen the effective playback bucket to the next whole-number multiple of the representative source frame period. This preserves the `maxFrameRate` cap while producing a more regular cadence.
 - `faster`: narrow the effective playback bucket to the previous whole-number multiple of the representative source frame period. This can exceed the requested `maxFrameRate` cap in exchange for a more source-aligned cadence.
+
+### `ScrubBucketingPolicy`
+
+```ts
+type ScrubBucketingPolicy = {
+  enabled?: boolean;             // default false
+  targetResponseHz?: number;     // default 12
+  minBucketMs?: number;          // default 0
+  maxBucketMs?: number;          // default 15 * 60 * 1000
+  smoothingAlpha?: number;       // default 0.2
+  hysteresisRatio?: number;      // default 0.2
+  snap?: "off" | "on" | "slower" | "faster"; // default "on"
+};
+```
+
+When enabled, paused `currentTime` changes are treated as scrub samples. The
+layer estimates scrub speed in timeline-ms per wall-ms, converts that to an
+adaptive temporal bucket width, optionally snaps it to the source cadence, and
+uses that bucket width for both display-frame suppression and prefetch
+scheduling while `interactionMode === "scrubbing"`.
 
 ### Callbacks
 

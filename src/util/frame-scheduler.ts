@@ -1,4 +1,5 @@
 import type {
+  BucketSnapPolicy,
   NormalizedTimeCOGFrame,
   TimeCOGBufferPolicy,
 } from "../types.js";
@@ -11,7 +12,7 @@ export type ScheduledFrame = {
   bucketWidthMs: number;
 };
 
-export type FrameRateSnapPolicy = "off" | "on" | "slower" | "faster";
+export type FrameRateSnapPolicy = BucketSnapPolicy;
 
 const DEFAULT_BACKWARD_FRAMES = 2;
 const DEFAULT_FORWARD_FRAMES = 6;
@@ -38,6 +39,7 @@ export function scheduleFrameWindow(
   playing = false,
   multiscaleLevelPenalty = DEFAULT_MULTISCALE_LEVEL_PENALTY,
   frameRateSnap: FrameRateSnapPolicy = "off",
+  explicitBucketIntervalMs = 0,
 ): ScheduledFrame[] {
   if (targetIndex < 0 || targetIndex >= catalog.length) {
     return [];
@@ -49,13 +51,16 @@ export function scheduleFrameWindow(
   const before = direction < 0 ? forwardFrames : backwardFrames;
   const after = direction < 0 ? backwardFrames : forwardFrames;
 
-  const bucketIntervalMs = resolvePlaybackBucketIntervalMs(
-    catalog,
-    maxFrameRate,
-    playbackRate,
-    playing,
-    frameRateSnap,
-  );
+  const bucketIntervalMs =
+    explicitBucketIntervalMs > 0
+      ? explicitBucketIntervalMs
+      : resolvePlaybackBucketIntervalMs(
+        catalog,
+        maxFrameRate,
+        playbackRate,
+        playing,
+        frameRateSnap,
+      );
 
   const representative = direction < 0 ? "last" : "first";
   const anchorIndex = representativeIndex(catalog, targetIndex, bucketIntervalMs, representative);
@@ -102,7 +107,19 @@ export function resolvePlaybackBucketIntervalMs(
     return 0;
   }
 
-  if (frameRateSnap === "off") {
+  return snapBucketIntervalMs(catalog, rawBucketIntervalMs, frameRateSnap);
+}
+
+export function snapBucketIntervalMs(
+  catalog: readonly NormalizedTimeCOGFrame[],
+  rawBucketIntervalMs: number,
+  snap: BucketSnapPolicy = "off",
+): number {
+  if (!Number.isFinite(rawBucketIntervalMs) || rawBucketIntervalMs <= 0) {
+    return 0;
+  }
+
+  if (snap === "off") {
     return rawBucketIntervalMs;
   }
 
@@ -114,7 +131,7 @@ export function resolvePlaybackBucketIntervalMs(
   const ratio = rawBucketIntervalMs / representativeFramePeriodMs;
   const normalizedRatio = Math.abs(ratio - Math.round(ratio)) < 1e-9 ? Math.round(ratio) : ratio;
   const snappedBucketIntervalMs =
-    frameRateSnap === "faster"
+    snap === "faster"
       ? Math.max(1, Math.floor(normalizedRatio)) * representativeFramePeriodMs
       : Math.ceil(normalizedRatio) * representativeFramePeriodMs;
 
@@ -383,26 +400,54 @@ export function applyMaxFrameRateBucking(
   if (!bucketIntervalMs) {
     return resolvedFrame;
   }
-  const originTimeMs = catalog[0]?.timeMs ?? 0;
-  const resolvedBucket = Math.floor(
-    (resolvedFrame.timeMs - originTimeMs) / bucketIntervalMs,
-  );
 
-  const lastFrame = catalog.find(
-    (f) => f.id === lastDisplayedFrameId,
+  return applyExplicitBucketBucketing(
+    resolvedFrame,
+    catalog,
+    lastDisplayedFrameId,
+    bucketIntervalMs,
+    playbackRate < 0 ? "last" : "first",
   );
+}
 
-  if (!lastFrame) {
+export function applyExplicitBucketBucketing(
+  resolvedFrame: NormalizedTimeCOGFrame,
+  catalog: readonly NormalizedTimeCOGFrame[],
+  lastDisplayedFrameId: string | null,
+  bucketIntervalMs: number,
+  representative: "first" | "last" = "first",
+): NormalizedTimeCOGFrame {
+  if (bucketIntervalMs <= 0) {
     return resolvedFrame;
   }
 
-  const lastBucket = Math.floor(
-    (lastFrame.timeMs - originTimeMs) / bucketIntervalMs,
-  );
-
-  if (lastBucket === resolvedBucket) {
-    return lastFrame;
+  const resolvedIndex = catalog.findIndex((frame) => frame.id === resolvedFrame.id);
+  if (resolvedIndex < 0) {
+    return resolvedFrame;
   }
 
-  return resolvedFrame;
+  const resolvedRepresentative = catalog[representativeIndex(
+    catalog,
+    resolvedIndex,
+    bucketIntervalMs,
+    representative,
+  )];
+
+  if (!lastDisplayedFrameId) {
+    return resolvedRepresentative ?? resolvedFrame;
+  }
+
+  const lastIndex = catalog.findIndex((frame) => frame.id === lastDisplayedFrameId);
+  if (lastIndex < 0) {
+    return resolvedRepresentative ?? resolvedFrame;
+  }
+
+  const resolvedBucket = computeBucket(catalog, resolvedIndex, bucketIntervalMs);
+  const lastBucket = computeBucket(catalog, lastIndex, bucketIntervalMs);
+
+  if (resolvedBucket === lastBucket) {
+    return catalog[lastIndex] ?? resolvedFrame;
+  }
+
+  return resolvedRepresentative ?? resolvedFrame;
 }

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyExplicitBucketBucketing,
   FramePrefetcher,
   SequenceTileCache,
+  snapBucketIntervalMs,
   canonicalizeUrl,
   findNearestFrameIndex,
   hasTile,
@@ -16,6 +18,7 @@ import {
   applyMaxFrameRateBucking,
   resolvePlaybackBucketIntervalMs,
 } from "../src/index.ts";
+import { TimeCOGLayer } from "../src/time-cog-layer.ts";
 import { TimeSequenceTileLayer } from "../src/time-sequence-tile-layer.ts";
 
 const frames = [
@@ -221,6 +224,44 @@ test("optional cadence snapping widens playback buckets to source-frame multiple
     resolvePlaybackBucketIntervalMs(catalog, 10, 1_800, true, "faster"),
     120_000,
   );
+  assert.equal(
+    snapBucketIntervalMs(catalog, 180_000, "on"),
+    240_000,
+  );
+});
+
+test("explicit bucket bucketing holds within a bucket and advances on boundary", () => {
+  const catalog = normalizeFrameCatalog(
+    Array.from({ length: 8 }, (_, index) => ({
+      id: `f${index}`,
+      time: index * 120_000,
+      url: `/${index}.tif`,
+    })),
+  );
+
+  assert.equal(
+    applyExplicitBucketBucketing(catalog[3], catalog, catalog[2].id, 240_000, "first").id,
+    catalog[2].id,
+  );
+  assert.equal(
+    applyExplicitBucketBucketing(catalog[4], catalog, catalog[2].id, 240_000, "first").id,
+    catalog[4].id,
+  );
+});
+
+test("explicit bucket bucketing uses the last representative for reverse traversal", () => {
+  const catalog = normalizeFrameCatalog(
+    Array.from({ length: 8 }, (_, index) => ({
+      id: `f${index}`,
+      time: index * 120_000,
+      url: `/${index}.tif`,
+    })),
+  );
+
+  assert.equal(
+    applyExplicitBucketBucketing(catalog[2], catalog, null, 240_000, "last").id,
+    catalog[3].id,
+  );
 });
 
 test("optional cadence snapping regularizes representative selection for 3:2 cadence mismatch", () => {
@@ -258,6 +299,81 @@ test("optional cadence snapping regularizes representative selection for 3:2 cad
     ).map((entry) => entry.index),
     [8, 10, 6, 12, 16],
   );
+});
+
+test("explicit bucket width drives scheduleFrameWindow even when not playing", () => {
+  const catalog = normalizeFrameCatalog(
+    Array.from({ length: 18 }, (_, index) => ({
+      time: index * 120_000,
+      url: `/${index}.tif`,
+    })),
+  );
+
+  assert.deepEqual(
+    scheduleFrameWindow(
+      catalog,
+      9,
+      { backwardFrames: 1, forwardFrames: 4 },
+      0,
+      0,
+      false,
+      0.5,
+      "off",
+      240_000,
+    ).map((entry) => entry.index),
+    [8, 6, 10, 12, 16],
+  );
+});
+
+test("time cog layer estimates scrub rate and applies hysteresis to scrub bucket width", () => {
+  const catalog = normalizeFrameCatalog(
+    Array.from({ length: 12 }, (_, index) => ({
+      time: index * 120_000,
+      url: `/${index}.tif`,
+    })),
+  );
+  const layer = Object.assign(Object.create(TimeCOGLayer.prototype), {
+    props: {
+      scrubBucketingPolicy: {
+        enabled: true,
+        targetResponseHz: 0.001,
+        minBucketMs: 0,
+        maxBucketMs: 1_000_000,
+        smoothingAlpha: 0.2,
+        hysteresisRatio: 0.2,
+        snap: "off",
+      },
+    },
+    state: {
+      lastScrubSample: null,
+      scrubRateEWMA: 0,
+      lastScrubBucketMs: 0,
+      currentTimeMs: 0,
+    },
+  }) as any;
+
+  const originalNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+
+  try {
+    layer.updateScrubTelemetry(0);
+    now = 1_100;
+    layer.updateScrubTelemetry(120_000);
+
+    const firstBucket = layer.getEffectiveScrubBucketMs(catalog, "scrubbing");
+    assert.equal(firstBucket, 1_000_000);
+
+    layer.state.scrubRateEWMA = 900;
+    const hysteresisBucket = layer.getEffectiveScrubBucketMs(catalog, "scrubbing");
+    assert.equal(hysteresisBucket, 1_000_000);
+
+    const idleBucket = layer.getEffectiveScrubBucketMs(catalog, "idle");
+    assert.equal(idleBucket, 0);
+    assert.equal(layer.state.scrubRateEWMA, 0);
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("frame-rate-aware scheduling exposes tunable multiscale level bias", () => {

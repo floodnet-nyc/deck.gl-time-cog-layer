@@ -17,6 +17,7 @@ export { TimeCOGLayer } from "./time-cog-layer.js";
 export type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
 export { renderTileDiagnostics, buildTileDiagSnapshot } from "./util/tile-diagnostics.js";
 export type {
+  BucketSnapPolicy,
   DescriptorManifest,
   DescriptorMode,
   InteractionMode,
@@ -24,6 +25,7 @@ export type {
   MissingFramesWatermark,
   NormalizedTimeCOGFrame,
   QualityPolicy,
+  ScrubBucketingPolicy,
   SchedulerPolicy,
   ScoringWeights,
   TimeCOGBufferPolicy,
@@ -36,6 +38,8 @@ export type {
 } from "./types.js";
 export {
   scheduleFrameWindow,
+  snapBucketIntervalMs,
+  applyExplicitBucketBucketing,
   applyMaxFrameRateBucking,
   resolvePlaybackBucketIntervalMs,
   type ScheduledFrame,

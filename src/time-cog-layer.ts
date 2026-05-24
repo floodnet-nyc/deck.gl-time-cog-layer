@@ -16,7 +16,12 @@ import {
   type Catalog,
 } from "./util/frame-catalog.js";
 import { FramePrefetcher } from "./frame-prefetcher.js";
-import { scheduleFrameWindow, applyMaxFrameRateBucking } from "./util/frame-scheduler.js";
+import {
+  applyExplicitBucketBucketing,
+  applyMaxFrameRateBucking,
+  scheduleFrameWindow,
+  snapBucketIntervalMs,
+} from "./util/frame-scheduler.js";
 import { SequenceTileCache } from "./sequence-tile-cache.js";
 import { TimeSequenceTileLayer } from "./time-sequence-tile-layer.js";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
@@ -32,6 +37,7 @@ import type {
   MissingFramesWatermark,
   NormalizedTimeCOGFrame,
   QualityPolicy,
+  ScrubBucketingPolicy,
   SchedulerPolicy,
   TileCoord,
   TimeCOGBufferPolicy,
@@ -93,6 +99,7 @@ export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps 
   bufferPolicy?: TimeCOGBufferPolicy;
   cachePolicy?: TimeCOGCachePolicy;
   qualityPolicy?: QualityPolicy;
+  scrubBucketingPolicy?: ScrubBucketingPolicy;
   schedulerPolicy?: SchedulerPolicy;
   /**
    * How the shared tileset descriptor is determined.
@@ -203,6 +210,15 @@ export type TimeCOGLayerState = {
   /** `Date.now()` of the last user-triggered timing change (seek / scrub). */
   lastInteractionMs: number;
 
+  /** Previous paused scrub sample used to estimate scrub speed. */
+  lastScrubSample: { wallMs: number; timeMs: number } | null;
+
+  /** EWMA scrub speed in timeline-ms per wall-ms. */
+  scrubRateEWMA: number;
+
+  /** Most recently applied scrub bucket width, used for hysteresis. */
+  lastScrubBucketMs: number;
+
   /** Timer that fires `fullResUpgradeIdleMs` after the last interaction to trigger full-res upgrades. */
   upgradeTimer: ReturnType<typeof setTimeout> | null;
 
@@ -211,6 +227,15 @@ export type TimeCOGLayerState = {
 };
 
 const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
+const DEFAULT_SCRUB_BUCKETING_POLICY: Required<ScrubBucketingPolicy> = {
+  enabled: false,
+  targetResponseHz: 12,
+  minBucketMs: 0,
+  maxBucketMs: 15 * 60 * 1000,
+  smoothingAlpha: 0.2,
+  hysteresisRatio: 0.2,
+  snap: "on",
+};
 
 /**
  * A deck.gl `CompositeLayer` that orchestrates time-indexed playback of
@@ -290,6 +315,9 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       lastDisplayedFrameId: null,
       interactionMode: "idle",
       lastInteractionMs: 0,
+      lastScrubSample: null,
+      scrubRateEWMA: 0,
+      lastScrubBucketMs: 0,
       upgradeTimer: null,
       readyFrameIds: new Set<string>(),
     } satisfies TimeCOGLayerState);
@@ -302,10 +330,12 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
 
     const state = this.state;
     const { updateTriggersChanged } = params.changeFlags;
+    const parsedCurrentTimeMs = parseTimeValue(props.currentTime);
     const framesChanged = data !== oldData ||
       !!(updateTriggersChanged && (updateTriggersChanged.getTime || updateTriggersChanged.getUrl));
     const cachePolicyChanged = !isEqual(props.cachePolicy, oldProps.cachePolicy);
     const timeChanged = props.currentTime !== oldProps.currentTime;
+    const playing = props.playing ?? false;
     const missingFramesWatermarkChanged =
       props.missingFramesWatermark !== oldProps.missingFramesWatermark;
     const timingChanged =
@@ -327,6 +357,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
 
     if (framesChanged) {
       state.prefetcher.clearMissingFrames();
+      this.resetScrubTelemetry();
       this.setState({ catalog });
     }
 
@@ -340,6 +371,14 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     if (framesChanged || timingChanged) {
       if (timeChanged) {
         state.lastInteractionMs = Date.now();
+
+        if (playing) {
+          this.resetScrubTelemetry();
+        } else {
+          this.updateScrubTelemetry(parsedCurrentTimeMs);
+        }
+      } else if (playing && !oldProps.playing) {
+        this.resetScrubTelemetry();
       }
 
       this.updateFrameState(catalog);
@@ -576,10 +615,20 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     const state = this.state;
     const currentTimeMs = parseTimeValue(this.props.currentTime);
     const playing = this.props.playing ?? false;
+    const interactionMode = detectInteractionMode(
+      playing,
+      state.lastInteractionMs,
+      this.props.qualityPolicy?.fullResUpgradeIdleMs,
+    );
     const effectiveCatalog =
       this.props.skipMissingFrames && state.prefetcher.missingFrames.size > 0
         ? catalog.filter((frame) => !state.prefetcher.missingFrames.has(frame.id))
         : catalog;
+    const scrubDirectionHint = this.getScrubDirectionHint(currentTimeMs);
+    const scrubBucketMs = this.getEffectiveScrubBucketMs(
+      effectiveCatalog,
+      interactionMode,
+    );
     const resolution = resolveFrameForTime(
       effectiveCatalog,
       currentTimeMs,
@@ -595,10 +644,21 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
         this.props.playbackRate ?? 0,
         this.props.schedulerPolicy?.frameRateSnap,
       );
+    } else if (scrubBucketMs > 0 && resolution.displayFrame) {
+      resolution.displayFrame = applyExplicitBucketBucketing(
+        resolution.displayFrame,
+        effectiveCatalog,
+        state.lastDisplayedFrameId,
+        scrubBucketMs,
+        scrubDirectionHint < 0 ? "last" : "first",
+      );
     }
 
     const prefetchAnchorFrame =
-      playing && (this.props.maxFrameRate ?? 0) > 0 && resolution.displayFrame
+      (
+        (playing && (this.props.maxFrameRate ?? 0) > 0) ||
+        (!playing && scrubBucketMs > 0)
+      ) && resolution.displayFrame
         ? resolution.displayFrame
         : resolution.targetFrame;
 
@@ -615,6 +675,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       playing,
       this.props.schedulerPolicy?.multiscaleLevelPenalty,
       this.props.schedulerPolicy?.frameRateSnap,
+      scrubBucketMs,
     ).map((sf) => sf.frame);
 
     if (!state.initialGeotiffUrl && resolution.displayFrame) {
@@ -622,12 +683,6 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
         initialGeotiffUrl: resolution.displayFrame.url,
       });
     }
-
-    const interactionMode = detectInteractionMode(
-      playing,
-      state.lastInteractionMs,
-      this.props.qualityPolicy?.fullResUpgradeIdleMs,
-    );
 
     if (state.upgradeTimer) {
       clearTimeout(state.upgradeTimer);
@@ -643,6 +698,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
 
         if (s.interactionMode === "seeking" || s.interactionMode === "scrubbing") {
           s.interactionMode = "idle";
+          this.resetScrubTelemetry();
           this.updatePrefetch();
         }
       }, idleMs);
@@ -722,6 +778,89 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     const watermark = this.props.missingFramesWatermark;
 
     return watermark === undefined ? null : parseTimeValue(watermark);
+  }
+
+  private resetScrubTelemetry(): void {
+    const state = this.state;
+    state.lastScrubSample = null;
+    state.scrubRateEWMA = 0;
+    state.lastScrubBucketMs = 0;
+  }
+
+  private updateScrubTelemetry(currentTimeMs: number): void {
+    const state = this.state;
+    const now = Date.now();
+    const previous = state.lastScrubSample;
+    state.lastScrubSample = { wallMs: now, timeMs: currentTimeMs };
+
+    if (!previous) {
+      return;
+    }
+
+    const deltaWallMs = now - previous.wallMs;
+    if (deltaWallMs <= 0) {
+      return;
+    }
+
+    const sampleRate = Math.abs(currentTimeMs - previous.timeMs) / deltaWallMs;
+    if (!Number.isFinite(sampleRate)) {
+      return;
+    }
+
+    const alpha = this.getScrubBucketingPolicy().smoothingAlpha;
+    state.scrubRateEWMA =
+      state.scrubRateEWMA > 0
+        ? alpha * sampleRate + (1 - alpha) * state.scrubRateEWMA
+        : sampleRate;
+  }
+
+  private getScrubDirectionHint(currentTimeMs: number): number {
+    return Math.sign(currentTimeMs - this.state.currentTimeMs) || 1;
+  }
+
+  private getScrubBucketingPolicy(): Required<ScrubBucketingPolicy> {
+    return {
+      ...DEFAULT_SCRUB_BUCKETING_POLICY,
+      ...(this.props.scrubBucketingPolicy ?? {}),
+    };
+  }
+
+  private getEffectiveScrubBucketMs(
+    catalog: Catalog,
+    interactionMode: InteractionMode,
+  ): number {
+    const state = this.state;
+    const policy = this.getScrubBucketingPolicy();
+
+    if (!policy.enabled || interactionMode !== "scrubbing") {
+      state.lastScrubBucketMs = 0;
+      if (interactionMode === "idle") {
+        state.lastScrubSample = null;
+        state.scrubRateEWMA = 0;
+      }
+      return 0;
+    }
+
+    const ewma = state.scrubRateEWMA;
+    if (!Number.isFinite(ewma) || ewma <= 0) {
+      return 0;
+    }
+
+    let bucketMs = ewma / policy.targetResponseHz;
+    bucketMs = Math.max(policy.minBucketMs, bucketMs);
+    bucketMs = Math.min(policy.maxBucketMs, bucketMs);
+    bucketMs = snapBucketIntervalMs(catalog, bucketMs, policy.snap);
+
+    const last = state.lastScrubBucketMs;
+    if (last > 0) {
+      const ratio = Math.abs(bucketMs - last) / last;
+      if (ratio < policy.hysteresisRatio) {
+        bucketMs = last;
+      }
+    }
+
+    state.lastScrubBucketMs = bucketMs;
+    return bucketMs;
   }
 
   private updatePrefetch(snapshot?: {
