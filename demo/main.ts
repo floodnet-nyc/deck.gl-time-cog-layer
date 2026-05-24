@@ -63,14 +63,6 @@ color = vec4(ramp, alpha);
   },
 } as const;
 
-type PrecipIndex = {
-  features: Array<{
-    properties: {
-      time: string;
-      url: string;
-    };
-  }>;
-};
 
 function padRowsToAlignment(
   data: Uint8Array | Uint16Array,
@@ -214,20 +206,47 @@ if (!playButton || !speedSelect || !frameInput || !timeOutput || !statsOutput) {
   throw new Error("Missing demo controls");
 }
 
-const index = await fetch("/precip_cog_index.json").then((response) => {
-  if (!response.ok) {
-    throw new Error(`Failed to load precip index: ${response.status}`);
-  }
+const range = (from: number, to: number, interval: number) => {
+  const result = [];
+  for (let i = from; i <= to; i += interval) { result.push(i); }
+  return result;
+};
 
-  return response.json() as Promise<PrecipIndex>;
-});
+const COG_BASE_URL = `${import.meta.env.VITE_COG_BASE_URL || "/cogs/"}`;
+const COG_INTERVAL_MS = import.meta.env.VITE_COG_INTERVAL_MS ? Number(import.meta.env.VITE_COG_INTERVAL_MS) : 2 * 60 * 1000; // 2 minutes
+const buildPrecipCogUrl = (timeMs: number, baseUrl: string = COG_BASE_URL) => `${baseUrl}${formatUtcTimestamp(timeMs)}.tif`;
+const buildFrameCatalog = (fromTimeMs: number, toTimeMs: number, intervalMs: number = COG_INTERVAL_MS) => {
+  return range(fromTimeMs, toTimeMs, intervalMs).map((timeMs) => ({
+    id: `precipitation-cog-${timeMs}`,
+    time: timeMs,
+    url: buildPrecipCogUrl(timeMs),
+  }));
+}
 
-type PrecipFeature = (typeof index.features)[number];
+const pad2 = (value: number) => String(value).padStart(2, "0");
+const formatUtcTimestamp = (timeMs: number) => {
+  const time = new Date(timeMs);
+  return [
+    time.getUTCFullYear(), pad2(time.getUTCMonth() + 1), pad2(time.getUTCDate()), "T", 
+    pad2(time.getUTCHours()), pad2(time.getUTCMinutes()), pad2(time.getUTCSeconds()), "Z",
+  ].join("");
+};
 
-const getTime = (f: PrecipFeature) => f.properties.time;
-const getUrl  = (f: PrecipFeature) => `/cogs/${new URL(f.properties.url).pathname.split("/").at(-1)}`;
+const getTime = (f: PrecipFeature) => f.time;
+const getUrl  = (f: PrecipFeature) => f.url;
 
-const { features } = index;
+type PrecipFeature = (ReturnType<typeof buildFrameCatalog>)[number];
+
+
+// const { features } = index;
+const query = new URLSearchParams(window.location.search);
+// const DEFAULT_FROM = "2026-05-20T00:00:00Z";
+// const DEFAULT_TO = "2026-05-21T00:00:00Z";
+const DEFAULT_FROM = "2025-10-30T12:00:00Z";
+const DEFAULT_TO = "2025-10-31T12:00:00Z";
+const fromTime = query.get("from") ? Date.parse(query.get("from")!) : new Date(DEFAULT_FROM).getTime();
+const toTime = query.get("to") ? Date.parse(query.get("to")!) : new Date(DEFAULT_TO).getTime();
+const features = buildFrameCatalog(fromTime, toTime);
 const catalog = normalizeFrameCatalog(features, getTime, getUrl);
 let selectedFrame = catalog[0] as NormalizedTimeCOGFrame | undefined;
 
@@ -294,16 +313,25 @@ function render(): void {
       lowResFirst: false,
     },
     bufferPolicy: {
-      backwardFrames: 0,
-      forwardFrames: playing ? 16 : 1,
+      backwardFrames: playing ? 0 : 2,
+      forwardFrames: playing ? 16 : 8,
     },
     schedulerPolicy: {
       maxNetworkRequests: 16,
       frameRateSnap: 'slower',
     },
+    skipMissingFrames: true,
+    missingFramesWatermark: Date.now() - 60 * 60 * 1000, // 1 hour ago
     // cachePolicy: {
     //   maxFrames: 120,
     // },
+    scrubBucketingPolicy: {
+      enabled: true,
+    },
+    onFrameDisplayed: (frame) => {
+      // console.log("Displayed frame", frame.id);
+      renderDiagnostics();
+    },
     onStats: (stats) => {
       const wastedKb = Math.round(stats.prefetchedWastedBytes / 1024);
       const useRate = Math.round(stats.prefetchedUseRate * 100);
