@@ -17,9 +17,7 @@ import "./style.css";
 const PRECIP_MAX_RAW_VALUE = 200;
 const PLAY_SPEEDS = [0.5, 1, 2, 5, 10, 30, 45, 60, 120].map((s) => s * 60);
 const DEFAULT_SPEED = 30 * 60;
-const COG_INTERVAL_MS = import.meta.env.VITE_COG_INTERVAL_MS
-  ? Number(import.meta.env.VITE_COG_INTERVAL_MS)
-  : 2 * 60 * 1000;
+const COG_INTERVAL_MS = Number(import.meta.env.VITE_COG_INTERVAL_MS ?? 2 * 60 * 1000);
 const COG_BASE_URL = `${import.meta.env.VITE_COG_BASE_URL || "/cogs/"}`;
 const DEFAULT_FROM = "2025-10-30T12:00:00Z";
 const DEFAULT_TO = "2025-10-31T12:00:00Z";
@@ -36,7 +34,7 @@ const INITIAL_VIEW_STATE = {
 type CatalogFrame = number;
 
 type DemoState = {
-  currentFrameIndex: number;
+  currentTimeMs: number | null;
   playing: boolean;
   playbackRate: number;
   lastFrameTime: number | null;
@@ -199,8 +197,8 @@ function renderTile(data: PrecipTileData): RenderTileResult {
 }
 
 
-function createTimeLayer(frames: number[], { currentFrameIndex, playing, playbackRate }: DemoState): TimeCOGLayer<CatalogFrame> | null {
-  const currentTime = frames[currentFrameIndex];
+function createTimeLayer(frames: number[], { playing, playbackRate }: DemoState): TimeCOGLayer<CatalogFrame> | null {
+  const currentTime = state.currentTimeMs;
 
   return currentTime == undefined ? null : new TimeCOGLayer({
     id: "time-cog-layer-demo",
@@ -245,16 +243,8 @@ function createTimeLayer(frames: number[], { currentFrameIndex, playing, playbac
 }
 
 function renderDiagnostics(): void {
-  if (!state.timeLayer) {
-    return;
-  }
-
   try {
-    const snapshot = state.timeLayer.getDiagnosticSnapshot();
-
-    if (snapshot.frameIds.length > 0) {
-      renderTileDiagnostics(ui.diagnosticsCanvas, snapshot);
-    }
+    if (state.timeLayer) { renderTileDiagnostics(ui.diagnosticsCanvas, state.timeLayer.getDiagnosticSnapshot()); }
   } catch {
     // Layer not yet initialized; retry on the next render pass.
   }
@@ -321,22 +311,13 @@ function createDemoUI(): {
   };
 }
 
-function getCurrentTimeMs(): number | undefined {
-  return frames[state.currentFrameIndex];
-}
-
-function setCurrentFrameIndex(index: number): void {
-  state.currentFrameIndex = index;
-  ui.frameInput.value = String(index);
-}
-
 function render(): void {
   if (frames.length === 0) {
     return;
   }
 
-  const currentTimeMs = getCurrentTimeMs();
-  ui.timeOutput.value = currentTimeMs === undefined ? "" : new Date(currentTimeMs).toISOString();
+  ui.timeOutput.value = state.currentTimeMs === null ? "" : new Date(state.currentTimeMs).toISOString();
+  ui.frameInput.value = state.currentTimeMs === null ? "" : String(state.currentTimeMs);
 
   state.timeLayer = createTimeLayer(frames, state);
 
@@ -373,7 +354,7 @@ const fromTime = query.get("from") ? Date.parse(query.get("from")!) : new Date(D
 const toTime = query.get("to") ? Date.parse(query.get("to")!) : new Date(DEFAULT_TO).getTime();
 const frames = range(fromTime, toTime, COG_INTERVAL_MS);
 const state: DemoState = {
-  currentFrameIndex: 0,
+  currentTimeMs: frames[0] ?? null,
   playing: false,
   playbackRate: DEFAULT_SPEED,
   lastFrameTime: null,
@@ -381,7 +362,10 @@ const state: DemoState = {
   timeLayer: null,
 };
 
-ui.frameInput.max = String(Math.max(0, frames.length - 1));
+ui.frameInput.min = String(fromTime);
+ui.frameInput.max = String(toTime);
+ui.frameInput.step = String(COG_INTERVAL_MS);
+ui.frameInput.value = state.currentTimeMs === null ? "" : String(state.currentTimeMs);
 
 const deck = new Deck({
   parent: ui.deckRoot,
@@ -390,23 +374,7 @@ const deck = new Deck({
   layers: [],
 });
 
-
 /* -------------------------------- Playback -------------------------------- */
-
-function findNearestFrameIndexForTime(targetTimeMs: number): number {
-  let nearestIndex = 0;
-  let nearestDistance = Number.POSITIVE_INFINITY;
-
-  for (let index = 0; index < frames.length; index += 1) {
-    const distance = Math.abs(frames[index] - targetTimeMs);
-    if (distance < nearestDistance) {
-      nearestDistance = distance;
-      nearestIndex = index;
-    }
-  }
-
-  return nearestIndex;
-}
 
 function startPlayback(): void {
   state.playing = true;
@@ -415,21 +383,18 @@ function startPlayback(): void {
   render();
 
   function tick(now: number): void {
-    const currentTimeMs = getCurrentTimeMs();
-
-    if (!state.playing || currentTimeMs === undefined) {
+    if (!state.playing || state.currentTimeMs === null) {
       return;
     }
 
     if (state.lastFrameTime !== null) {
       const deltaMs = now - state.lastFrameTime;
       const advanceMs = deltaMs * state.playbackRate;
-      const nextTimeMsRaw = currentTimeMs + advanceMs;
-      const nextTimeMs = nextTimeMsRaw >= frames[frames.length - 1] ? frames[0] : nextTimeMsRaw < frames[0] ? frames[frames.length - 1] : nextTimeMsRaw;
-      const nearestIndex = findNearestFrameIndexForTime(nextTimeMs);
+      const nextTimeMsRaw = state.currentTimeMs + advanceMs;
+      const nextTimeMs = nextTimeMsRaw >= toTime ? fromTime : nextTimeMsRaw < fromTime ? toTime : nextTimeMsRaw;
 
-      if (nearestIndex !== state.currentFrameIndex) {
-        setCurrentFrameIndex(nearestIndex);
+      if (nextTimeMs !== state.currentTimeMs) {
+        state.currentTimeMs = nextTimeMs;
         render();
         state.lastFrameTime = now;
       }
@@ -456,11 +421,7 @@ function stopPlayback(): void {
 }
 
 ui.playButton.addEventListener("click", () => {
-  if (state.playing) {
-    stopPlayback();
-  } else {
-    startPlayback();
-  }
+  state.playing ? stopPlayback() : startPlayback();
 });
 
 ui.speedSelect.addEventListener("change", () => {
@@ -472,10 +433,8 @@ ui.speedSelect.addEventListener("change", () => {
 });
 
 ui.frameInput.addEventListener("input", () => {
-  setCurrentFrameIndex(Number(ui.frameInput.value));
+  state.currentTimeMs = Number(ui.frameInput.value);
   render();
 });
 
 render();
-
-
