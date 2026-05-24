@@ -71,6 +71,9 @@ export type TimeCOGBufferPolicy = {
   forwardFrames?: number;
 };
 
+/** Epoch-ms watermark used to decide which missing frames are old enough to skip. */
+export type MissingFramesWatermark = TimeValue;
+
 /**
  * Controls progressive loading of preview (overview-biased) tiles
  * vs full-resolution tiles during seek / scrub / playback.

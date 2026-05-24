@@ -123,6 +123,7 @@ updateTriggers: {
 | `maxFrameRate` | `number` | `0` | Maximum display frame rate during playback (0 = unlimited) |
 | `missingFramePolicy` | `"hold-last" \| "nearest" \| "skip" \| "transparent"` | `"hold-last"` | How to resolve a time between catalog entries |
 | `skipMissingFrames` | `boolean` | `false` | When true, frames that fail GeoTIFF open are temporarily excluded from display selection and scheduling |
+| `missingFramesWatermark` | `number \| string \| Date` | `undefined` | Only frames at or before this timestamp are eligible for skip-missing exclusion; newer frames keep retrying so real-time ingestion can catch up |
 | `bufferPolicy` | `object` | `{ backwardFrames: 2, forwardFrames: 6 }` | How many frames to prefetch ahead / retain behind |
 | `cachePolicy` | `object` | `{}` | Tile cache limits — `memoryBytes`, `maxFrames`, `maxTiles` |
 | `qualityPolicy` | `object` | `{}` | Progressive loading behaviour — `lowResFirst`, `previewOverviewBias`, `scrubOverviewBias`, `fullResUpgradeIdleMs` |

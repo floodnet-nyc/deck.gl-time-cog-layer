@@ -29,6 +29,7 @@ import type {
   DescriptorMode,
   InteractionMode,
   MissingFramePolicy,
+  MissingFramesWatermark,
   NormalizedTimeCOGFrame,
   QualityPolicy,
   SchedulerPolicy,
@@ -83,6 +84,12 @@ export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps 
   missingFramePolicy?: MissingFramePolicy;
   /** When true, frames that fail GeoTIFF open are temporarily excluded from selection and scheduling. */
   skipMissingFrames?: boolean;
+  /**
+   * Epoch-ms watermark that limits which failed frames are eligible for
+   * skip-missing exclusion. Frames newer than this watermark continue to
+   * retry so real-time ingestion can catch up.
+   */
+  missingFramesWatermark?: MissingFramesWatermark;
   bufferPolicy?: TimeCOGBufferPolicy;
   cachePolicy?: TimeCOGCachePolicy;
   qualityPolicy?: QualityPolicy;
@@ -299,10 +306,14 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       !!(updateTriggersChanged && (updateTriggersChanged.getTime || updateTriggersChanged.getUrl));
     const cachePolicyChanged = !isEqual(props.cachePolicy, oldProps.cachePolicy);
     const timeChanged = props.currentTime !== oldProps.currentTime;
+    const missingFramesWatermarkChanged =
+      props.missingFramesWatermark !== oldProps.missingFramesWatermark;
     const timingChanged =
       timeChanged ||
       props.playing !== oldProps.playing ||
       props.playbackRate !== oldProps.playbackRate ||
+      props.skipMissingFrames !== oldProps.skipMissingFrames ||
+      missingFramesWatermarkChanged ||
       !isEqual(props.bufferPolicy, oldProps.bufferPolicy) ||
       !isEqual(props.missingFramePolicy, oldProps.missingFramePolicy);
 
@@ -317,6 +328,13 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     if (framesChanged) {
       state.prefetcher.clearMissingFrames();
       this.setState({ catalog });
+    }
+
+    if (framesChanged || missingFramesWatermarkChanged) {
+      state.prefetcher.pruneMissingFrames(
+        catalog,
+        this.getMissingFramesWatermarkMs(),
+      );
     }
 
     if (framesChanged || timingChanged) {
@@ -475,7 +493,11 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       }
 
       if (result.status === "missing-frame") {
-        this.state.prefetcher.markMissingFrame(id);
+        this.state.prefetcher.markMissingFrame(
+          id,
+          frame.timeMs,
+          this.getMissingFramesWatermarkMs(),
+        );
         console.warn("TimeCOGLayer: missing frame", { url, x, y, z, err: result.error });
         if (this.props.skipMissingFrames) {
           this.updateFrameState(this.state.catalog);
@@ -696,6 +718,12 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     this.props.onStats?.(buildStats(s.tileCache, s.prefetcher, s), this);
   }
 
+  private getMissingFramesWatermarkMs(): number | null {
+    const watermark = this.props.missingFramesWatermark;
+
+    return watermark === undefined ? null : parseTimeValue(watermark);
+  }
+
   private updatePrefetch(snapshot?: {
     targetFrame: NormalizedTimeCOGFrame | null;
     displayFrame: NormalizedTimeCOGFrame | null;
@@ -742,6 +770,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       interactionMode: state.interactionMode,
       qualityPolicy: this.props.qualityPolicy ?? {},
       geotiffRegistry: state.geotiffRegistry,
+      missingFramesWatermarkMs: this.getMissingFramesWatermarkMs(),
     });
 
     this.checkFrameReady(displayFrame);

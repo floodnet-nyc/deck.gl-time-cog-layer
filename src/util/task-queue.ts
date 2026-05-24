@@ -6,6 +6,7 @@ export type TileCoord = { x: number; y: number; z: number };
 export type TileTask = {
   frameId: string;
   frameUrl: string;
+  frameTimeMs?: number;
   requestInit?: RequestInit;
   x: number;
   y: number;
@@ -13,6 +14,7 @@ export type TileTask = {
   quality: TileQuality;
   priority: number;
   byteSizeHint?: number;
+  missingFramesWatermarkMs?: number | null;
 };
 
 export function taskKey(

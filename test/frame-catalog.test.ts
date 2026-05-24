@@ -83,6 +83,29 @@ test("resolveFrameForTime can skip known-missing frames", () => {
   );
 });
 
+test("frame prefetcher only records missing frames at or before the watermark", () => {
+  const prefetcher = new FramePrefetcher(new SequenceTileCache(), 0);
+
+  prefetcher.markMissingFrame("old", 1_000, 2_000);
+  prefetcher.markMissingFrame("new", 3_000, 2_000);
+
+  assert.deepEqual([...prefetcher.missingFrames], ["old"]);
+});
+
+test("frame prefetcher prunes tracked missing frames newer than the watermark", () => {
+  const prefetcher = new FramePrefetcher(new SequenceTileCache(), 0);
+  const catalog = normalizeFrameCatalog([
+    { id: "old", time: 1_000, url: "/old.tif" },
+    { id: "new", time: 3_000, url: "/new.tif" },
+  ]);
+
+  prefetcher.markMissingFrame("old");
+  prefetcher.markMissingFrame("new");
+  prefetcher.pruneMissingFrames(catalog, 2_000);
+
+  assert.deepEqual([...prefetcher.missingFrames], ["old"]);
+});
+
 test("schedules a playback-aware frame window", () => {
   const catalog = normalizeFrameCatalog([
     { time: 0, url: "/0.tif" },

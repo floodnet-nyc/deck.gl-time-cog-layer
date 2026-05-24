@@ -12,6 +12,7 @@ import {
   type ScoringContext,
 } from "./util/task-scorer.js";
 import { GeoTIFFRegistry } from "./util/geotiff-registry.js";
+import type { Catalog } from "./util/frame-catalog.js";
 
 type PrefetchSnapshot = {
   targetFrame: NormalizedTimeCOGFrame;
@@ -42,6 +43,7 @@ type PrefetchSnapshot = {
   };
   scoringWeights?: ScoringWeights;
   geotiffRegistry?: GeoTIFFRegistry;
+  missingFramesWatermarkMs?: number | null;
 };
 
 /**
@@ -222,6 +224,7 @@ export class FramePrefetcher {
         const task: TileTask = {
           frameId: frame.id,
           frameUrl: frame.url,
+          frameTimeMs: frame.timeMs,
           requestInit: frame.requestInit,
           byteSizeHint: frame.byteSizeHint,
           x: tile.x,
@@ -229,6 +232,7 @@ export class FramePrefetcher {
           z: tile.z,
           quality: "full",
           priority: 0,
+          missingFramesWatermarkMs: snapshot.missingFramesWatermarkMs,
         };
 
         task.priority = scoreTask(
@@ -247,12 +251,42 @@ export class FramePrefetcher {
     this.pump();
   }
 
-  markMissingFrame(frameId: string): void {
+  markMissingFrame(frameId: string, frameTimeMs?: number, watermarkTimeMs?: number | null): void {
+    if (
+      watermarkTimeMs != null &&
+      frameTimeMs != null &&
+      frameTimeMs > watermarkTimeMs
+    ) {
+      return;
+    }
+
     this.missingFrameIds.add(frameId);
   }
 
   clearMissingFrames(): void {
     this.missingFrameIds.clear();
+  }
+
+  pruneMissingFrames(catalog: Catalog, watermarkTimeMs?: number | null): void {
+    if (this.missingFrameIds.size === 0) {
+      return;
+    }
+
+    if (watermarkTimeMs == null) {
+      return;
+    }
+
+    const eligibleIds = new Set(
+      catalog
+        .filter((frame) => frame.timeMs <= watermarkTimeMs)
+        .map((frame) => frame.id),
+    );
+
+    for (const frameId of this.missingFrameIds) {
+      if (!eligibleIds.has(frameId)) {
+        this.missingFrameIds.delete(frameId);
+      }
+    }
   }
 
   abortAll(): void {
@@ -382,7 +416,7 @@ export class FramePrefetcher {
       }
 
       if (result.status === "missing-frame") {
-        this.missingFrameIds.add(id);
+        this.markMissingFrame(id, task.frameTimeMs, task.missingFramesWatermarkMs);
         console.warn("FramePrefetcher: missing frame", { url, x, y, z, err: result.error });
         return;
       }

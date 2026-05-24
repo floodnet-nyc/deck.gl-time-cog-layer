@@ -21,6 +21,7 @@ export type {
   DescriptorMode,
   InteractionMode,
   MissingFramePolicy,
+  MissingFramesWatermark,
   NormalizedTimeCOGFrame,
   QualityPolicy,
   SchedulerPolicy,
