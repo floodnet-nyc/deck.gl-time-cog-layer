@@ -32,7 +32,7 @@ const INITIAL_VIEW_STATE = {
 
 
 type CatalogFrame = number;
-type DataFormat = Uint8Array | Uint16Array;
+type DataFormat = Uint8Array | Uint16Array | Float32Array;
 
 type TileData = MinimalTileData & {
   byteLength: number;
@@ -111,7 +111,10 @@ function padRowsToAlignment(
   }
 
   return {
-    data: data instanceof Uint16Array ? new Uint16Array(dstBytes.buffer) : dstBytes,
+    data:
+      data instanceof Uint16Array ? new Uint16Array(dstBytes.buffer)
+      : data instanceof Float32Array ? new Float32Array(dstBytes.buffer)
+      : dstBytes,
     bytesPerRow,
   };
 }
@@ -144,7 +147,16 @@ async function getTileData(
       magFilter: "linear",
     },
   });
-  const upload = padRowsToAlignment(data, width, height, 2);
+
+  if (!bitsPerSample.every((bits) => bits === bitsPerSample[0])) {
+    throw new Error("Mixed bitsPerSample values are not supported.");
+  }
+
+  if (bitsPerSample[0] % 8 !== 0) {
+    throw new Error("Sub-byte sample sizes are not supported.");
+  }
+
+  const upload = padRowsToAlignment(data, width, height, (bitsPerSample[0] / 8) * samplesPerPixel);
   texture.writeData(upload.data, { bytesPerRow: upload.bytesPerRow });
   let byteLength = data.byteLength;
 
