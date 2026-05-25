@@ -32,6 +32,13 @@ const INITIAL_VIEW_STATE = {
 
 
 type CatalogFrame = number;
+type DataFormat = Uint8Array | Uint16Array;
+
+type TileData = MinimalTileData & {
+  byteLength: number;
+  texture: Texture;
+  mask?: Texture;
+};
 
 type DemoState = {
   currentTimeMs: number | null;
@@ -44,13 +51,7 @@ type DemoState = {
 
 /* ----------------------------- Tile Functions ----------------------------- */
 
-type PrecipTileData = MinimalTileData & {
-  byteLength: number;
-  texture: Texture;
-  mask?: Texture;
-};
-
-const PrecipColorRamp = {
+const ColorRamp = {
   name: "precip-color-ramp",
   inject: {
     "fs:DECKGL_FILTER_COLOR": `
@@ -90,11 +91,11 @@ color = vec4(ramp, alpha);
 
 
 function padRowsToAlignment(
-  data: Uint8Array | Uint16Array,
+  data: DataFormat,
   width: number,
   height: number,
   bytesPerPixel: number,
-): { data: Uint8Array | Uint16Array; bytesPerRow: number } {
+): { data: DataFormat; bytesPerRow: number } {
   const rowBytes = width * bytesPerPixel;
   const bytesPerRow = Math.ceil(rowBytes / 4) * 4;
 
@@ -118,7 +119,7 @@ function padRowsToAlignment(
 async function getTileData(
   image: GeoTIFF | Overview,
   { device, x, y, signal, pool }: GetTileDataOptions,
-): Promise<PrecipTileData> {
+): Promise<TileData> {
   const tile = await image.fetchTile(x, y, {
     boundless: false,
     pool,
@@ -131,8 +132,9 @@ async function getTileData(
     throw new Error("Band-separate precipitation tiles are not supported.");
   }
 
-  const data = array.data as Uint8Array | Uint16Array;
-  const format = geotiffTexture.inferTextureFormat(1, new Uint16Array([16]), [1]);
+  const data = array.data as DataFormat;
+  const { samplesPerPixel, bitsPerSample, sampleFormat } = image.cachedTags;
+  const format = geotiffTexture.inferTextureFormat(samplesPerPixel, bitsPerSample, sampleFormat);
   const texture = device.createTexture({
     format,
     width,
@@ -144,9 +146,9 @@ async function getTileData(
   });
   const upload = padRowsToAlignment(data, width, height, 2);
   texture.writeData(upload.data, { bytesPerRow: upload.bytesPerRow });
-  let maskTexture: Texture | undefined;
   let byteLength = data.byteLength;
 
+  let maskTexture: Texture | undefined;
   if (mask) {
     maskTexture = device.createTexture({
       format: "r8unorm",
@@ -171,7 +173,7 @@ async function getTileData(
   };
 }
 
-function renderTile(data: PrecipTileData): RenderTileResult {
+function renderTile(data: TileData): RenderTileResult {
   const renderPipeline: RasterModule[] = [
     {
       module: CreateTexture,
@@ -180,7 +182,7 @@ function renderTile(data: PrecipTileData): RenderTileResult {
       },
     },
     {
-      module: PrecipColorRamp,
+      module: ColorRamp,
     },
   ];
 
@@ -229,27 +231,17 @@ function createTimeLayer(frames: number[], { playing, playbackRate }: DemoState)
     scrubBucketingPolicy: {
       enabled: true,
     },
-    onStats: (stats: TimeCOGStats, layer: TimeCOGLayer<CatalogFrame>) => {
-      const wastedKb = Math.round(stats.prefetchedWastedBytes / 1024);
-      const useRate = Math.round(stats.prefetchedUseRate * 100);
-      const wasteRate = Math.round(stats.prefetchedWasteRate * 100);
+    onStats: (stats: TimeCOGStats) => {
       ui.statsOutput.value =
         `${stats.readyFrameCount}/${stats.frameCount} ready, ` +
         `${stats.scheduledFrameCount} scheduled | ` +
-        `prefetch used: ${useRate}% | ` +
-        `waste: ${stats.prefetchedWastedCount} (${wasteRate}%, ${wastedKb} kB)`;
+        `prefetch used: ${Math.round(stats.prefetchedUseRate * 100)}% | ` +
+        `waste: ${stats.prefetchedWastedCount} (` + 
+        `${Math.round(stats.prefetchedWasteRate * 100)}%, ` +
+        `${Math.round(stats.prefetchedWastedBytes / 1024)} kB)`;
     },
   });
 }
-
-function renderDiagnostics(): void {
-  try {
-    if (state.timeLayer) { renderTileDiagnostics(ui.diagnosticsCanvas, state.timeLayer.getDiagnosticSnapshot()); }
-  } catch {
-    // Layer not yet initialized; retry on the next render pass.
-  }
-}
-
 
 /* --------------------------- Catalog Generation --------------------------- */
 
@@ -344,27 +336,32 @@ function render(): void {
     ],
   });
 
-  requestAnimationFrame(() => renderDiagnostics());
+  requestAnimationFrame(() => {
+    try {
+      if (state.timeLayer) { renderTileDiagnostics(ui.diagnosticsCanvas, state.timeLayer.getDiagnosticSnapshot()); }
+    } catch { } // Layer not yet initialized; retry on the next render pass.
+  });
 }
 
-
-const ui = createDemoUI();
 const query = new URLSearchParams(window.location.search);
 const fromTime = query.get("from") ? Date.parse(query.get("from")!) : new Date(DEFAULT_FROM).getTime();
 const toTime = query.get("to") ? Date.parse(query.get("to")!) : new Date(DEFAULT_TO).getTime();
-const frames = range(fromTime, toTime, COG_INTERVAL_MS);
+const interval = Math.max(1, Math.round(Number(query.get('interval') ?? COG_INTERVAL_MS)) / COG_INTERVAL_MS) * COG_INTERVAL_MS;
+const playbackRate = Number(query.get("speed") ?? DEFAULT_SPEED);
+const frames = range(fromTime, toTime, interval);
 const state: DemoState = {
-  currentTimeMs: frames[0] ?? null,
+  currentTimeMs: fromTime,
   playing: false,
-  playbackRate: DEFAULT_SPEED,
+  playbackRate: playbackRate,
   lastFrameTime: null,
   animFrameId: null,
   timeLayer: null,
 };
 
+const ui = createDemoUI();
 ui.frameInput.min = String(fromTime);
 ui.frameInput.max = String(toTime);
-ui.frameInput.step = String(COG_INTERVAL_MS);
+ui.frameInput.step = String(interval);
 ui.frameInput.value = state.currentTimeMs === null ? "" : String(state.currentTimeMs);
 
 const deck = new Deck({
@@ -387,21 +384,14 @@ function startPlayback(): void {
       return;
     }
 
-    if (state.lastFrameTime !== null) {
-      const deltaMs = now - state.lastFrameTime;
-      const advanceMs = deltaMs * state.playbackRate;
-      const nextTimeMsRaw = state.currentTimeMs + advanceMs;
-      const nextTimeMs = nextTimeMsRaw >= toTime ? fromTime : nextTimeMsRaw < fromTime ? toTime : nextTimeMsRaw;
-
-      if (nextTimeMs !== state.currentTimeMs) {
-        state.currentTimeMs = nextTimeMs;
-        render();
-        state.lastFrameTime = now;
-      }
-    } else {
+    if (state.lastFrameTime == null) {
+      state.lastFrameTime = now;
+    } else if (now !== state.lastFrameTime) {
+      const nextTimeMs = state.currentTimeMs + (now - state.lastFrameTime) * state.playbackRate;
+      state.currentTimeMs = nextTimeMs >= toTime ? fromTime : nextTimeMs < fromTime ? toTime : nextTimeMs;
+      render();
       state.lastFrameTime = now;
     }
-
     state.animFrameId = requestAnimationFrame(tick);
   }
 
