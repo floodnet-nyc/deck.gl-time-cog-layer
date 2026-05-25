@@ -62,8 +62,6 @@ import { isEqual } from "lodash-es";
 export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps & {
   /** Ordered list of time → COG URL entries. */
   data: readonly TFrame[];
-  // DEPRECATED frames prop, will be removed in v0.3.0 in favor of `data`
-  frames?: readonly TFrame[];
   /**
    * Accessor that extracts the timestamp from a frame item.
    * When omitted, each item is expected to have a `.time` field
@@ -325,13 +323,11 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
 
   updateState(params: UpdateParameters<this>): void {
     const { props, oldProps } = params;
-    const data = props.data?.length === 0 && props.frames !== undefined && props.frames.length > 0 ? props.frames : props.data;
-    const oldData = oldProps.data?.length === 0 && oldProps.frames !== undefined && oldProps.frames.length > 0 ? oldProps.frames : oldProps.data;
 
     const state = this.state;
     const { updateTriggersChanged } = params.changeFlags;
     const parsedCurrentTimeMs = parseTimeValue(props.currentTime);
-    const framesChanged = data !== oldData ||
+    const framesChanged = props.data !== oldProps.data ||
       !!(updateTriggersChanged && (updateTriggersChanged.getTime || updateTriggersChanged.getUrl));
     const cachePolicyChanged = !isEqual(props.cachePolicy, oldProps.cachePolicy);
     const timeChanged = props.currentTime !== oldProps.currentTime;
@@ -352,7 +348,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     }
 
     const catalog = framesChanged
-      ? normalizeFrameCatalog(data, props.getTime, props.getUrl)
+      ? normalizeFrameCatalog(props.data, props.getTime, props.getUrl)
       : state.catalog;
 
     if (framesChanged) {
@@ -413,7 +409,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     // Get passThrough props by excluding this layer's props
     const {
       id,
-      frames,
+      data,
       getTime,
       getUrl,
       currentTime,
