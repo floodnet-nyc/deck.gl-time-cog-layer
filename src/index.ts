@@ -68,3 +68,4 @@ export {
   mapToCoarserZoom,
   isMissingTileError,
 } from "./util/tile-utils.js";
+export { padTextureRowsToAlignment } from "./util/pad-texture-rows-to-alignment.js";

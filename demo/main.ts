@@ -11,6 +11,7 @@ import type { Texture } from "@luma.gl/core";
 import { TimeCOGLayer, type TimeCOGStats } from "../src/index.js";
 import { renderTileDiagnostics } from "../src/util/tile-diagnostics.js";
 import "./style.css";
+import { padTextureRowsToAlignment } from "../src/util/pad-texture-rows-to-alignment.js";
 
 /* --------------------------------- Options -------------------------------- */
 
@@ -32,7 +33,7 @@ const INITIAL_VIEW_STATE = {
 
 
 type CatalogFrame = number;
-type DataFormat = Uint8Array | Uint16Array | Float32Array;
+export type DataFormat = Uint8Array | Uint16Array | Float32Array;
 
 type TileData = MinimalTileData & {
   byteLength: number;
@@ -89,36 +90,6 @@ color = vec4(ramp, alpha);
   },
 } as const;
 
-
-function padRowsToAlignment(
-  data: DataFormat,
-  width: number,
-  height: number,
-  bytesPerPixel: number,
-): { data: DataFormat; bytesPerRow: number } {
-  const rowBytes = width * bytesPerPixel;
-  const bytesPerRow = Math.ceil(rowBytes / 4) * 4;
-
-  if (bytesPerRow === rowBytes) {
-    return { data, bytesPerRow };
-  }
-
-  const src = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  const dstBytes = new Uint8Array(bytesPerRow * height);
-
-  for (let row = 0; row < height; row += 1) {
-    dstBytes.set(src.subarray(row * rowBytes, (row + 1) * rowBytes), row * bytesPerRow);
-  }
-
-  return {
-    data:
-      data instanceof Uint16Array ? new Uint16Array(dstBytes.buffer)
-      : data instanceof Float32Array ? new Float32Array(dstBytes.buffer)
-      : dstBytes,
-    bytesPerRow,
-  };
-}
-
 async function getTileData(
   image: GeoTIFF | Overview,
   { device, x, y, signal, pool }: GetTileDataOptions,
@@ -156,14 +127,16 @@ async function getTileData(
     throw new Error("Sub-byte sample sizes are not supported.");
   }
 
-  const upload = padRowsToAlignment(data, width, height, (bitsPerSample[0] / 8) * samplesPerPixel);
+  const bytesPerPixel = (bitsPerSample[0] / 8) * samplesPerPixel;
+  const upload = padTextureRowsToAlignment(data, width, height, bytesPerPixel);
   texture.writeData(upload.data, { bytesPerRow: upload.bytesPerRow });
   let byteLength = data.byteLength;
 
   let maskTexture: Texture | undefined;
   if (mask) {
+    const format = "r8unorm";
     maskTexture = device.createTexture({
-      format: "r8unorm",
+      format,
       width,
       height,
       sampler: {
@@ -171,7 +144,8 @@ async function getTileData(
         magFilter: "nearest",
       },
     });
-    const maskUpload = padRowsToAlignment(mask, width, height, 1);
+    const bytesPerPixel = 1;
+    const maskUpload = padTextureRowsToAlignment(mask, width, height, bytesPerPixel);
     maskTexture.writeData(maskUpload.data, { bytesPerRow: maskUpload.bytesPerRow });
     byteLength += mask.byteLength;
   }
