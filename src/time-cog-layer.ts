@@ -226,7 +226,7 @@ export type TimeCOGLayerState = {
 
 const DEFAULT_MISSING_FRAME_POLICY = "hold-last";
 const DEFAULT_SCRUB_BUCKETING_POLICY: Required<ScrubBucketingPolicy> = {
-  enabled: false,
+  enabled: true,
   targetResponseHz: 12,
   minBucketMs: 0,
   maxBucketMs: 15 * 60 * 1000,
