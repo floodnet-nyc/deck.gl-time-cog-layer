@@ -122,7 +122,7 @@ updateTriggers: {
 | `playbackRate` | `number` | `0` | Speed multiplier (e.g. `60` = 1 minute of data per real second) |
 | `maxFrameRate` | `number` | `0` | Maximum display frame rate during playback (0 = unlimited) |
 | `missingFramePolicy` | `"hold-last" \| "nearest" \| "skip" \| "transparent"` | `"hold-last"` | How to resolve a time between catalog entries |
-| `skipMissingFrames` | `boolean` | `false` | When true, frames that fail GeoTIFF open are temporarily excluded from display selection and scheduling |
+| `skipMissingFrames` | `boolean` | `false` | When true, frames that fail GeoTIFF open are excluded from display selection; recent failures remain retryable |
 | `missingFramesWatermark` | `number \| string \| Date` | `undefined` | Only frames at or before this timestamp are eligible for skip-missing exclusion; newer frames keep retrying so real-time ingestion can catch up |
 | `bufferPolicy` | `object` | `{ backwardFrames: 2, forwardFrames: 6 }` | How many frames to prefetch ahead / retain behind |
 | `cachePolicy` | `object` | `{}` | Tile cache limits — `memoryBytes`, `maxFrames`, `maxTiles` |
@@ -177,7 +177,7 @@ type MissingFramePolicy = "hold-last" | "nearest" | "skip" | "transparent";
 
 | Policy | Behaviour |
 |---|---|
-| `"hold-last"` (default) | Show the most recent frame at or before the requested time. Least visually disruptive. |
+| `"hold-last"` (default) | Show the most recent available frame at or before the requested time. Least visually disruptive. |
 | `"nearest"` | Show the closest frame by absolute time difference. |
 | `"skip"` | Show nothing (`displayFrame` is `null`). |
 | `"transparent"` | Show nothing (`displayFrame` is `null`). |

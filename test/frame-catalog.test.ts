@@ -109,6 +109,35 @@ test("frame prefetcher prunes tracked missing frames newer than the watermark", 
   assert.deepEqual([...prefetcher.missingFrames], ["old"]);
 });
 
+test("frame prefetcher keeps recent unavailable frames retryable", () => {
+  const prefetcher = new FramePrefetcher(new SequenceTileCache(), 0);
+
+  prefetcher.markMissingFrame("recent", 3_000, 2_000);
+
+  assert.equal(prefetcher.missingFrames.has("recent"), false);
+  assert.equal(prefetcher.unavailableFrames.has("recent"), true);
+
+  prefetcher.clearMissingFrame("recent");
+  assert.equal(prefetcher.unavailableFrames.has("recent"), false);
+});
+
+test("descriptor candidates prefer the latest frame at or before the playhead", () => {
+  const catalog = normalizeFrameCatalog([
+    { id: "f0", time: 0, url: "/0.tif" },
+    { id: "f1", time: 1_000, url: "/1.tif" },
+    { id: "f2", time: 2_000, url: "/2.tif" },
+    { id: "f3", time: 3_000, url: "/3.tif" },
+  ]);
+  const layer = Object.assign(Object.create(TimeCOGLayer.prototype), {
+    props: { missingFramePolicy: "hold-last" },
+  }) as any;
+
+  assert.deepEqual(
+    layer.getDescriptorCandidates(catalog, 2_500).map((frame) => frame.id),
+    ["f2", "f1", "f0", "f3"],
+  );
+});
+
 test("schedules a playback-aware frame window", () => {
   const catalog = normalizeFrameCatalog([
     { time: 0, url: "/0.tif" },

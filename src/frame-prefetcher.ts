@@ -105,6 +105,8 @@ export class FramePrefetcher {
    */
   private missingTileKeys = new Set<string>();
   private missingFrameIds = new Set<string>();
+  /** Frames that are currently unavailable, including recent retryable gaps. */
+  private unavailableFrameIds = new Set<string>();
 
   constructor(
     tileCache: SequenceTileCache,
@@ -149,6 +151,11 @@ export class FramePrefetcher {
   /** Frame ids known to fail at GeoTIFF open time. */
   get missingFrames(): ReadonlySet<string> {
     return this.missingFrameIds;
+  }
+
+  /** Frame ids that have recently failed to open and should be skipped for display. */
+  get unavailableFrames(): ReadonlySet<string> {
+    return this.unavailableFrameIds;
   }
 
   /** @internal Public for test assertions on adaptive concurrency. */
@@ -252,6 +259,8 @@ export class FramePrefetcher {
   }
 
   markMissingFrame(frameId: string, frameTimeMs?: number, watermarkTimeMs?: number | null): void {
+    this.unavailableFrameIds.add(frameId);
+
     if (
       watermarkTimeMs != null &&
       frameTimeMs != null &&
@@ -263,12 +272,18 @@ export class FramePrefetcher {
     this.missingFrameIds.add(frameId);
   }
 
+  clearMissingFrame(frameId: string): void {
+    this.missingFrameIds.delete(frameId);
+    this.unavailableFrameIds.delete(frameId);
+  }
+
   clearMissingFrames(): void {
     this.missingFrameIds.clear();
+    this.unavailableFrameIds.clear();
   }
 
   pruneMissingFrames(catalog: Catalog, watermarkTimeMs?: number | null): void {
-    if (this.missingFrameIds.size === 0) {
+    if (this.missingFrameIds.size === 0 && this.unavailableFrameIds.size === 0) {
       return;
     }
 
@@ -281,6 +296,14 @@ export class FramePrefetcher {
         .filter((frame) => frame.timeMs <= watermarkTimeMs)
         .map((frame) => frame.id),
     );
+
+    const catalogIds = new Set(catalog.map((frame) => frame.id));
+
+    for (const frameId of this.unavailableFrameIds) {
+      if (!catalogIds.has(frameId)) {
+        this.unavailableFrameIds.delete(frameId);
+      }
+    }
 
     for (const frameId of this.missingFrameIds) {
       if (!eligibleIds.has(frameId)) {
@@ -430,6 +453,8 @@ export class FramePrefetcher {
         console.warn("FramePrefetcher: tile fetch failed", result.error);
         return;
       }
+
+      this.clearMissingFrame(id);
 
       const elapsed = performance.now() - t0;
 

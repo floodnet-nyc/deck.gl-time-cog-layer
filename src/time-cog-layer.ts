@@ -6,6 +6,7 @@ import type {
 } from "@deck.gl/core";
 import { CompositeLayer } from "@deck.gl/core";
 import { defaultDecoderPool } from "@developmentseed/geotiff";
+import type { GeoTIFF } from "@developmentseed/geotiff";
 import type { _Tile2DHeader, _TileLoadProps as TileLoadProps } from "@deck.gl/geo-layers";
 import type { Device } from "@luma.gl/core";
 import {
@@ -49,6 +50,7 @@ import type {
 } from "./types.js";
 import type { TileDiagSnapshot } from "./util/tile-diagnostics.js";
 import { buildTileDiagSnapshot } from "./util/tile-diagnostics.js";
+import { isMissingFrameError } from "./util/tile-utils.js";
 import type { COGLayerProps } from "@developmentseed/deck.gl-geotiff";
 import { isEqual } from "lodash-es";
 
@@ -86,7 +88,7 @@ export type TimeCOGLayerProps<TFrame = TimeCOGFrame> = COGLayerPassThroughProps 
   /** Maximum display frame rate during playback in frames per second (0 = unlimited).  Default 0. */
   maxFrameRate?: number;
   missingFramePolicy?: MissingFramePolicy;
-  /** When true, frames that fail GeoTIFF open are temporarily excluded from selection and scheduling. */
+  /** When true, failed frames are excluded from selection; recent failures remain retryable. */
   skipMissingFrames?: boolean;
   /**
    * Epoch-ms watermark that limits which failed frames are eligible for
@@ -171,14 +173,18 @@ export type TimeCOGLayerState = {
   visibleTileRef: { tiles: TileCoord[]; };
 
   /**
-   * The GeoTIFF URL of the very first displayed frame.
-   * This URL is passed as the `geotiff` prop to the persistent
-   * `COGLayer` sublayer so that the shared tileset descriptor is
-   * parsed **once** and reused for the lifetime of the layer.
-   * Changing the `geotiff` URL would cause COGLayer to re-parse the
-   * header, tearing down the descriptor and inner TileLayer.
+   * The GeoTIFF URL of the descriptor exemplar. The opened exemplar is
+   * passed as the `geotiff` prop to the persistent `COGLayer` sublayer so
+   * the shared tileset descriptor is parsed once and reused for the layer
+   * lifetime.
    */
   initialGeotiffUrl: string;
+
+  /** The opened GeoTIFF used to establish the persistent tileset descriptor. */
+  initialGeotiff?: GeoTIFF;
+
+  /** The catalog frame that supplied the persistent tileset descriptor. */
+  descriptorFrame: NormalizedTimeCOGFrame | null;
 
   /** The current playback time, as a millisecond epoch. */
   currentTimeMs: number;
@@ -280,6 +286,9 @@ const DEFAULT_SCRUB_BUCKETING_POLICY: Required<ScrubBucketingPolicy> = {
 export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGLayerProps<TFrame>> {
   static layerName = "TimeCOGLayer";
 
+  private descriptorBootstrapPromise: Promise<void> | null = null;
+  private descriptorBootstrapGeneration = 0;
+
   declare state: CompositeLayer<TimeCOGLayerProps<TFrame>>["state"] & TimeCOGLayerState;
 
   /**
@@ -305,6 +314,8 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       ),
       visibleTileRef: { tiles: [] },
       initialGeotiffUrl: "",
+      initialGeotiff: undefined,
+      descriptorFrame: null,
       currentTimeMs: 0,
       targetFrame: null,
       displayFrame: null,
@@ -353,6 +364,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
 
     if (framesChanged) {
       state.prefetcher.clearMissingFrames();
+      this.descriptorBootstrapGeneration += 1;
       this.resetScrubTelemetry();
       this.setState({ catalog });
     }
@@ -391,9 +403,9 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
    * the current display frame's `id`, which triggers
    * `tileset.reloadAll()` without discarding already-loaded tiles.
    *
-   * The `geotiff` prop is set to the very first frame's URL and
-   * never changes.  This ensures `COGLayer` computes the shared
-   * tileset descriptor exactly once.
+   * The `geotiff` prop is set to the first successfully opened
+   * descriptor exemplar and never changes. This ensures `COGLayer`
+   * computes the shared tileset descriptor exactly once.
    *
    * Frame changes are handled by the shared cache plus a reload of the
    * persistent sublayer's tile data callback for the new frame.
@@ -402,7 +414,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     const state = this.state;
     const frame = state.displayFrame;
 
-    if (!frame) {
+    if (!frame || !state.initialGeotiff) {
       return null;
     }
 
@@ -442,12 +454,12 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       ...passThrough
     } = this.props;
 
-    const initialUrl = state.initialGeotiffUrl || frame.url;
+    const initialGeotiff = state.initialGeotiff;
 
     return new TimeSequenceTileLayer({
       ...passThrough,
       id: `${id}-tiles`,
-      geotiff: initialUrl,
+      geotiff: initialGeotiff,
       getTileData: this._getTileDataCallback(frame),
       renderTile,
       loadOptions: frame.requestInit ? {
@@ -462,7 +474,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
         ...updateTriggers,
         getTileData: frame.id,
       },
-      onGeoTIFFLoad: this._getOnGeoTiffLoadCallback(frame),
+      onGeoTIFFLoad: this._getOnGeoTiffLoadCallback(state.descriptorFrame ?? frame),
       onViewportLoad: (loadedTiles: _Tile2DHeader<Record<string, unknown>>[]) => {
         if (state.visibleTileRef) {
           state.visibleTileRef.tiles = loadedTiles.map(({ index: { x, y, z } }) => ({ x, y, z }));
@@ -517,6 +529,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       });
 
       if (result.status === "ok") {
+        this.state.prefetcher.clearMissingFrame(id);
         tileCache.put(id, x, y, z, {
           x, y, z,
           ...result.result,
@@ -534,11 +547,8 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
           this.getMissingFramesWatermarkMs(),
         );
         console.warn("TimeCOGLayer: missing frame", { url, x, y, z, err: result.error });
-        if (this.props.skipMissingFrames) {
-          this.updateFrameState(this.state.catalog);
-          return null;
-        }
-        throw result.error;
+        this.updateFrameState(this.state.catalog);
+        return null;
       }
 
       if (result.status === "error") {
@@ -585,6 +595,8 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
    */
   finalizeState(): void {
     const state = this.state;
+    this.descriptorBootstrapGeneration += 1;
+    this.descriptorBootstrapPromise = null;
 
     if (state.upgradeTimer) {
       clearTimeout(state.upgradeTimer);
@@ -616,20 +628,36 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       state.lastInteractionMs,
       this.props.qualityPolicy?.fullResUpgradeIdleMs,
     );
+    const missingFramePolicy =
+      this.props.missingFramePolicy ?? DEFAULT_MISSING_FRAME_POLICY;
+    const unavailableFrames = state.prefetcher.unavailableFrames;
+    const shouldHoldUnavailable =
+      this.props.skipMissingFrames ||
+      missingFramePolicy === "hold-last" ||
+      missingFramePolicy === "nearest";
     const effectiveCatalog =
-      this.props.skipMissingFrames && state.prefetcher.missingFrames.size > 0
-        ? catalog.filter((frame) => !state.prefetcher.missingFrames.has(frame.id))
+      shouldHoldUnavailable && unavailableFrames.size > 0
+        ? catalog.filter((frame) => !unavailableFrames.has(frame.id))
         : catalog;
     const scrubDirectionHint = this.getScrubDirectionHint(currentTimeMs);
     const scrubBucketMs = this.getEffectiveScrubBucketMs(
       effectiveCatalog,
       interactionMode,
     );
+    const requestedResolution = resolveFrameForTime(
+      catalog,
+      currentTimeMs,
+      missingFramePolicy,
+    );
     const resolution = resolveFrameForTime(
       effectiveCatalog,
       currentTimeMs,
-      this.props.missingFramePolicy ?? DEFAULT_MISSING_FRAME_POLICY,
+      missingFramePolicy,
     );
+    // Keep the requested catalog frame visible to callers even when the
+    // display frame falls back to an older available frame.
+    resolution.targetFrame = requestedResolution.targetFrame;
+    resolution.missing = requestedResolution.missing;
 
     if (playing && resolution.displayFrame) {
       resolution.displayFrame = applyMaxFrameRateBucking(
@@ -650,20 +678,37 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       );
     }
 
+    const unavailableTarget = Boolean(
+      resolution.targetFrame && unavailableFrames.has(resolution.targetFrame.id),
+    );
+    const fallbackAnchorFrame = unavailableTarget && resolution.displayFrame
+      ? resolution.displayFrame
+      : resolution.targetFrame;
     const prefetchAnchorFrame =
       (
         (playing && (this.props.maxFrameRate ?? 0) > 0) ||
         (!playing && scrubBucketMs > 0)
       ) && resolution.displayFrame
         ? resolution.displayFrame
-        : resolution.targetFrame;
+        : fallbackAnchorFrame;
+
+    const watermarkMs = this.getMissingFramesWatermarkMs();
+    const scheduledCatalog = catalog.filter((frame) => {
+      if (!state.prefetcher.missingFrames.has(frame.id)) {
+        return true;
+      }
+
+      // Without a watermark, failed frames remain retryable. With one, only
+      // frames newer than the watermark are retried as ingestion catches up.
+      return watermarkMs == null || frame.timeMs > watermarkMs;
+    });
 
     const targetIndex = prefetchAnchorFrame
-      ? findNearestFrameIndex(effectiveCatalog, prefetchAnchorFrame.timeMs)
+      ? findNearestFrameIndex(scheduledCatalog, prefetchAnchorFrame.timeMs)
       : -1;
 
     const scheduledFrames = scheduleFrameWindow(
-      effectiveCatalog,
+      scheduledCatalog,
       targetIndex,
       this.props.bufferPolicy,
       this.props.playbackRate,
@@ -674,10 +719,8 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       scrubBucketMs,
     ).map((sf) => sf.frame);
 
-    if (!state.initialGeotiffUrl && resolution.displayFrame) {
-      this.setState({
-        initialGeotiffUrl: resolution.displayFrame.url,
-      });
+    if (!state.initialGeotiff && catalog.length > 0) {
+      this.ensureInitialDescriptor(catalog, currentTimeMs);
     }
 
     if (state.upgradeTimer) {
@@ -727,6 +770,7 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
     }
 
     if (
+      state.initialGeotiff &&
       resolution.displayFrame &&
       state.lastDisplayedFrameId !== resolution.displayFrame.id
     ) {
@@ -762,6 +806,95 @@ export class TimeCOGLayer<TFrame = TimeCOGFrame> extends CompositeLayer<TimeCOGL
       scheduledFrames,
       missing: resolution.missing,
       interactionMode,
+    });
+  }
+
+  /**
+   * Open a usable COG before creating the persistent sublayer. The first
+   * display frame is not necessarily a valid descriptor source: real-time
+   * catalogs can contain URLs before ingestion has produced the object.
+   */
+  private ensureInitialDescriptor(catalog: Catalog, currentTimeMs: number): void {
+    const state = this.state;
+
+    if (state.initialGeotiff || this.descriptorBootstrapPromise || catalog.length === 0) {
+      return;
+    }
+
+    const generation = this.descriptorBootstrapGeneration;
+    const promise = this.bootstrapInitialDescriptor(catalog, currentTimeMs, generation);
+    this.descriptorBootstrapPromise = promise;
+
+    void promise.then(() => undefined, () => undefined).finally(() => {
+      if (this.descriptorBootstrapPromise === promise) {
+        this.descriptorBootstrapPromise = null;
+      }
+    });
+  }
+
+  private async bootstrapInitialDescriptor(
+    catalog: Catalog,
+    currentTimeMs: number,
+    generation: number,
+  ): Promise<void> {
+    const state = this.state;
+    const unavailable = state.prefetcher.unavailableFrames;
+    const candidates = this.getDescriptorCandidates(catalog, currentTimeMs);
+    const orderedCandidates = [
+      ...candidates.filter((frame) => !unavailable.has(frame.id)),
+      ...candidates.filter((frame) => unavailable.has(frame.id)),
+    ];
+
+    for (const frame of orderedCandidates) {
+      try {
+        const geotiff = await state.geotiffRegistry.open(
+          frame.id,
+          frame.url,
+          frame.requestInit,
+        );
+
+        if (generation !== this.descriptorBootstrapGeneration || this.state !== state) {
+          return;
+        }
+
+        state.prefetcher.clearMissingFrame(frame.id);
+        this.setState({
+          initialGeotiff: geotiff,
+          initialGeotiffUrl: frame.url,
+          descriptorFrame: frame,
+        });
+        this.updateFrameState(this.state.catalog);
+        return;
+      } catch (error) {
+        if (isMissingFrameError(error)) {
+          state.prefetcher.markMissingFrame(
+            frame.id,
+            frame.timeMs,
+            this.getMissingFramesWatermarkMs(),
+          );
+        }
+      }
+    }
+  }
+
+  private getDescriptorCandidates(catalog: Catalog, currentTimeMs: number): Catalog {
+    const policy = this.props.missingFramePolicy ?? DEFAULT_MISSING_FRAME_POLICY;
+
+    return [...catalog].sort((a, b) => {
+      if (policy === "hold-last") {
+        const aIsPast = a.timeMs <= currentTimeMs;
+        const bIsPast = b.timeMs <= currentTimeMs;
+
+        if (aIsPast !== bIsPast) {
+          return aIsPast ? -1 : 1;
+        }
+
+        return aIsPast
+          ? b.timeMs - a.timeMs
+          : a.timeMs - b.timeMs;
+      }
+
+      return Math.abs(a.timeMs - currentTimeMs) - Math.abs(b.timeMs - currentTimeMs);
     });
   }
 
