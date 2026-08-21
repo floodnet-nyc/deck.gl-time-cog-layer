@@ -11,7 +11,10 @@ import type { Texture } from "@luma.gl/core";
 import { TimeCOGLayer, type TimeCOGStats } from "../src/index.js";
 import { renderTileDiagnostics } from "../src/util/tile-diagnostics.js";
 import "./style.css";
-import { padTextureRowsToAlignment } from "../src/util/pad-texture-rows-to-alignment.js";
+import {
+  padTextureRowsToAlignment,
+  type DataFormat,
+} from "../src/util/pad-texture-rows-to-alignment.js";
 
 /* --------------------------------- Options -------------------------------- */
 
@@ -33,8 +36,6 @@ const INITIAL_VIEW_STATE = {
 
 
 type CatalogFrame = number;
-export type DataFormat = Uint8Array | Uint16Array | Float32Array;
-
 type TileData = MinimalTileData & {
   byteLength: number;
   texture: Texture;

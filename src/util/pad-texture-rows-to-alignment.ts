@@ -1,5 +1,4 @@
-import type { DataFormat } from "../../demo/main";
-
+export type DataFormat = Uint8Array | Uint16Array | Float32Array;
 
 export function padTextureRowsToAlignment(
   data: DataFormat,
